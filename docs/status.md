@@ -12,6 +12,9 @@
 - Delivery fee: `3000 + ceil(distance_km) * 1000` (haversine distance).
 - Two order codes (pickup and delivery) stored as hashes only.
 - Promotions apply in strict order and do not stack on the same item units.
+- Service fee is fixed: `service_fee = 3000` for ALL orders (DELIVERY and PICKUP).
+- Delivery fee is separate and delivery-only: `delivery_fee = 3000 + ceil(distance_km) * 1000` (minimum 3000).
+
 
 ## TODO / Next steps
 - Define data schema and core services (Phase 1).
