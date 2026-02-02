@@ -13,6 +13,9 @@
 - Base schema for vendors, menu, orders, and quotes.
 - Quote calculation with delivery fee and pickup rules.
 - Partial promotions support: FIXED_PRICE and PERCENT.
+- Quote includes `service_fee` and `delivery_fee` separately.
+- Quote totals: `items_subtotal`, `discount_total`, `service_fee`, `delivery_fee`, `total`.
+
 
 **Tests**
 - Unit tests for delivery fee and partial promotion ordering.
