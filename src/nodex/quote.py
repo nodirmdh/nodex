@@ -1,72 +1,79 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable
+from typing import Any, Dict
 
 from .pricing import (
-    CartItem,
+    CartLine,
+    FulfillmentType,
     GeoPoint,
-    OrderType,
-    Promotion,
     PromotionType,
+    QuoteContext,
     QuoteRequest,
-    VendorCategory,
-    VendorInfo,
+    QuoteValidationError,
     calculate_quote,
 )
 
 
-def _parse_promotions(raw_promotions: Iterable[Dict[str, Any]]) -> list[Promotion]:
-    promotions: list[Promotion] = []
-    for promo in raw_promotions:
-        promo_type = PromotionType(promo["type"])
-        item_ids = promo.get("item_ids", [])
-        promotions.append(
-            Promotion(
-                promo_type=promo_type,
-                item_ids=item_ids,
-                fixed_price_amount=promo.get("fixed_price_amount"),
-                percent_off=promo.get("percent_off"),
-            )
-        )
-    return promotions
+class QuoteNotFoundError(QuoteValidationError):
+    pass
 
 
-def build_quote_response(payload: Dict[str, Any]) -> Dict[str, Any]:
-    vendor = VendorInfo(
-        category=VendorCategory(payload["vendor"]["category"]),
-        supports_pickup=payload["vendor"]["supports_pickup"],
-        geo=GeoPoint(
-            lat=payload["vendor"]["geo"]["lat"],
-            lng=payload["vendor"]["geo"]["lng"],
-        ),
-    )
+def quote_cart(payload: Dict[str, Any], context: QuoteContext) -> Dict[str, Any]:
+    vendor_id = payload.get("vendor_id")
+    if not vendor_id:
+        raise QuoteValidationError("vendor_id is required")
 
-    delivery_geo = None
-    if payload.get("delivery_geo"):
-        delivery_geo = GeoPoint(
-            lat=payload["delivery_geo"]["lat"],
-            lng=payload["delivery_geo"]["lng"],
+    vendor = context.vendors.get(vendor_id)
+    if vendor is None:
+        raise QuoteNotFoundError("vendor not found")
+
+    try:
+        fulfillment_type = FulfillmentType(payload["fulfillment_type"])
+    except KeyError as exc:
+        raise QuoteValidationError("fulfillment_type is required") from exc
+
+    delivery_location = None
+    if payload.get("delivery_location"):
+        delivery_location = GeoPoint(
+            lat=payload["delivery_location"]["lat"],
+            lng=payload["delivery_location"]["lng"],
         )
 
-    items = [
-        CartItem(
-            item_id=item["item_id"],
-            unit_price=item["unit_price"],
-            quantity=item["quantity"],
-        )
-        for item in payload["items"]
-    ]
+    items_payload = payload.get("items", [])
+    if not items_payload:
+        raise QuoteValidationError("items are required")
+
+    request_items: list[CartLine] = []
+    for line in items_payload:
+        menu_item_id = line["menu_item_id"]
+        quantity = line["quantity"]
+        if quantity <= 0:
+            raise QuoteValidationError("quantity must be greater than 0")
+        menu_item = context.menu_items.get(menu_item_id)
+        if menu_item is None:
+            raise QuoteValidationError("menu_item_id not found")
+        if menu_item.vendor_id != vendor.vendor_id:
+            raise QuoteValidationError("menu_item_id does not belong to vendor")
+        if not menu_item.is_available:
+            raise QuoteValidationError("menu_item_id is not available")
+        request_items.append(CartLine(menu_item_id=menu_item_id, quantity=quantity))
 
     request = QuoteRequest(
-        order_type=OrderType(payload["order_type"]),
-        vendor=vendor,
-        items=items,
-        delivery_geo=delivery_geo,
+        vendor_id=vendor_id,
+        fulfillment_type=fulfillment_type,
+        items=request_items,
+        delivery_location=delivery_location,
         delivery_comment=payload.get("delivery_comment"),
-        promotions=_parse_promotions(payload.get("promotions", [])),
+        promo_code=payload.get("promo_code"),
     )
 
-    quote = calculate_quote(request)
+    promotions = [
+        promo
+        for promo in context.promotions
+        if promo.is_active and promo.promo_type in (PromotionType.FIXED_PRICE, PromotionType.PERCENT)
+    ]
+
+    quote = calculate_quote(request, vendor, context.menu_items, promotions)
 
     return {
         "items_subtotal": quote.items_subtotal,

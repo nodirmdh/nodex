@@ -11,7 +11,7 @@ DELIVERY_BASE_FEE = 3000
 DELIVERY_PER_KM_FEE = 1000
 
 
-class OrderType(str, Enum):
+class FulfillmentType(str, Enum):
     DELIVERY = "DELIVERY"
     PICKUP = "PICKUP"
 
@@ -36,34 +36,43 @@ class GeoPoint:
 
 @dataclass(frozen=True)
 class VendorInfo:
+    vendor_id: str
     category: VendorCategory
     supports_pickup: bool
     geo: GeoPoint
 
 
 @dataclass(frozen=True)
-class CartItem:
+class MenuItem:
     item_id: str
-    unit_price: int
+    vendor_id: str
+    price: int
+    is_available: bool
+
+
+@dataclass(frozen=True)
+class CartLine:
+    menu_item_id: str
     quantity: int
 
 
 @dataclass(frozen=True)
 class Promotion:
+    promotion_id: str
     promo_type: PromotionType
     item_ids: Sequence[str]
-    fixed_price_amount: int | None = None
-    percent_off: int | None = None
+    value_numeric: int
+    is_active: bool = True
 
 
 @dataclass(frozen=True)
 class QuoteRequest:
-    order_type: OrderType
-    vendor: VendorInfo
-    items: Sequence[CartItem]
-    delivery_geo: GeoPoint | None = None
+    vendor_id: str
+    fulfillment_type: FulfillmentType
+    items: Sequence[CartLine]
+    delivery_location: GeoPoint | None = None
     delivery_comment: str | None = None
-    promotions: Sequence[Promotion] = ()
+    promo_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -77,6 +86,17 @@ class QuoteResult:
     combo_count: int
     buyxgety_count: int
     gift_count: int
+
+
+class QuoteValidationError(ValueError):
+    status_code = 400
+
+
+@dataclass(frozen=True)
+class QuoteContext:
+    vendors: dict[str, VendorInfo]
+    menu_items: dict[str, MenuItem]
+    promotions: Sequence[Promotion]
 
 
 def haversine_km(origin: GeoPoint, destination: GeoPoint) -> float:
@@ -94,72 +114,84 @@ def haversine_km(origin: GeoPoint, destination: GeoPoint) -> float:
     return radius_km * c
 
 
-def calculate_delivery_fee(order_type: OrderType, vendor_geo: GeoPoint, delivery_geo: GeoPoint | None) -> int:
-    if order_type == OrderType.PICKUP:
+def calculate_delivery_fee(
+    fulfillment_type: FulfillmentType,
+    vendor_geo: GeoPoint,
+    delivery_location: GeoPoint | None,
+) -> int:
+    if fulfillment_type == FulfillmentType.PICKUP:
         return 0
-    if delivery_geo is None:
-        raise ValueError("delivery_geo is required for delivery orders")
-    distance_km = haversine_km(vendor_geo, delivery_geo)
+    if delivery_location is None:
+        raise QuoteValidationError("delivery_location is required for delivery orders")
+    distance_km = haversine_km(vendor_geo, delivery_location)
     return DELIVERY_BASE_FEE + math.ceil(distance_km) * DELIVERY_PER_KM_FEE
 
 
-def _validate_pickup_rules(request: QuoteRequest) -> None:
-    if request.order_type != OrderType.PICKUP:
+def _validate_pickup_rules(fulfillment_type: FulfillmentType, vendor: VendorInfo) -> None:
+    if fulfillment_type != FulfillmentType.PICKUP:
         return
-    if request.vendor.category != VendorCategory.RESTAURANTS or not request.vendor.supports_pickup:
-        raise ValueError("pickup orders are only allowed for restaurants with pickup enabled")
+    if vendor.category != VendorCategory.RESTAURANTS or not vendor.supports_pickup:
+        raise QuoteValidationError("pickup is only allowed for restaurants with pickup enabled")
 
 
 def _validate_delivery_rules(request: QuoteRequest) -> None:
-    if request.order_type != OrderType.DELIVERY:
+    if request.fulfillment_type != FulfillmentType.DELIVERY:
         return
-    if request.delivery_geo is None:
-        raise ValueError("delivery_geo is required for delivery orders")
+    if request.delivery_location is None:
+        raise QuoteValidationError("delivery_location is required for delivery orders")
     if not request.delivery_comment:
-        raise ValueError("delivery_comment is required for delivery orders")
+        raise QuoteValidationError("delivery_comment is required for delivery orders")
 
 
-def _validate_promotions(promotions: Iterable[Promotion]) -> None:
-    for promo in promotions:
-        if promo.promo_type not in (PromotionType.FIXED_PRICE, PromotionType.PERCENT):
-            raise ValueError(f"unsupported promotion type: {promo.promo_type}")
-        if promo.promo_type == PromotionType.FIXED_PRICE and promo.fixed_price_amount is None:
-            raise ValueError("fixed_price_amount is required for FIXED_PRICE promotions")
-        if promo.promo_type == PromotionType.PERCENT and promo.percent_off is None:
-            raise ValueError("percent_off is required for PERCENT promotions")
-
-
-def _per_unit_discount(item: CartItem, promotions: Iterable[Promotion]) -> int:
+def _per_unit_discount(unit_price: int, promotions: Iterable[Promotion]) -> int:
     best_discount = 0
     for promo in promotions:
-        if item.item_id not in promo.item_ids:
+        if not promo.is_active:
             continue
         if promo.promo_type == PromotionType.FIXED_PRICE:
-            discount = max(item.unit_price - (promo.fixed_price_amount or 0), 0)
+            discount = max(unit_price - promo.value_numeric, 0)
         else:
-            percent = promo.percent_off or 0
-            discount = math.floor(item.unit_price * percent / 100)
+            discount = math.floor(unit_price * promo.value_numeric / 100)
         if discount > best_discount:
             best_discount = discount
     return best_discount
 
 
-def calculate_quote(request: QuoteRequest) -> QuoteResult:
-    _validate_pickup_rules(request)
-    _validate_delivery_rules(request)
-    _validate_promotions(request.promotions)
-
-    items_subtotal = sum(item.unit_price * item.quantity for item in request.items)
-
+def _calculate_discounts(
+    menu_items: dict[str, MenuItem],
+    request_items: Sequence[CartLine],
+    promotions: Sequence[Promotion],
+) -> tuple[int, int]:
     discount_total = 0
     promo_items_count = 0
-    for item in request.items:
-        per_unit_discount = _per_unit_discount(item, request.promotions)
+    for line in request_items:
+        menu_item = menu_items[line.menu_item_id]
+        applicable_promos = [
+            promo for promo in promotions if line.menu_item_id in promo.item_ids and promo.is_active
+        ]
+        per_unit_discount = _per_unit_discount(menu_item.price, applicable_promos)
         if per_unit_discount > 0:
-            promo_items_count += item.quantity
-            discount_total += per_unit_discount * item.quantity
+            promo_items_count += 1
+            discount_total += per_unit_discount * line.quantity
+    return discount_total, promo_items_count
 
-    delivery_fee = calculate_delivery_fee(request.order_type, request.vendor.geo, request.delivery_geo)
+
+def calculate_quote(
+    request: QuoteRequest,
+    vendor: VendorInfo,
+    menu_items: dict[str, MenuItem],
+    promotions: Sequence[Promotion],
+) -> QuoteResult:
+    _validate_pickup_rules(request.fulfillment_type, vendor)
+    _validate_delivery_rules(request)
+
+    items_subtotal = 0
+    for line in request.items:
+        menu_item = menu_items[line.menu_item_id]
+        items_subtotal += menu_item.price * line.quantity
+
+    discount_total, promo_items_count = _calculate_discounts(menu_items, request.items, promotions)
+    delivery_fee = calculate_delivery_fee(request.fulfillment_type, vendor.geo, request.delivery_location)
     total = items_subtotal - discount_total + SERVICE_FEE_AMOUNT + delivery_fee
 
     return QuoteResult(
