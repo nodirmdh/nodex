@@ -1,0 +1,47 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Inter", system-ui, sans-serif;
+  color: #1f2933;
+  background: #f7f8fa;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: #111827;
+  color: #fff;
+  padding: 24px 16px;
+}
+
+.logo {
+  font-weight: 600;
+  margin-bottom: 24px;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.nav a {
+  color: #cbd5f5;
+  text-decoration: none;
+}
+
+.nav a.active {
+  color: #fff;
+  font-weight: 600;
+}
+
+.content {
+  padding: 32px;
+}

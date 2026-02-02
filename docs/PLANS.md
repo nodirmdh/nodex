@@ -4,6 +4,10 @@
 **Deliverables**
 - Complete core documentation set.
 - Establish repo structure and initial conventions.
+- Initialize Node.js/TypeScript backend scaffold.
+- Configure testing (Vitest/Jest) and CI test command.
+- Configure DB migrations (Prisma/TypeORM).
+
 
 **Tests**
 - Doc linting / markdown checks (if configured).

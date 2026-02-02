@@ -1,0 +1,71 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum VendorCategory {
+  RESTAURANTS
+  PRODUCTS
+  PHARMACY
+  MARKET
+}
+
+enum PromotionType {
+  FIXED_PRICE
+  PERCENT
+  COMBO
+  BUY_X_GET_Y
+  GIFT
+}
+
+model Vendor {
+  id             String         @id @default(uuid())
+  category       VendorCategory
+  supportsPickup Boolean        @default(false)
+  addressText    String?
+  geoLat         Float
+  geoLng         Float
+  menuItems      MenuItem[]
+  promotions     Promotion[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+}
+
+model MenuItem {
+  id            String          @id @default(uuid())
+  vendorId      String
+  vendor        Vendor          @relation(fields: [vendorId], references: [id])
+  price         Int
+  isAvailable   Boolean         @default(true)
+  promotionItems PromotionItem[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+}
+
+model Promotion {
+  id            String          @id @default(uuid())
+  vendorId      String
+  vendor        Vendor          @relation(fields: [vendorId], references: [id])
+  promoType     PromotionType
+  valueNumeric  Int
+  isActive      Boolean         @default(true)
+  promotionItems PromotionItem[]
+  startsAt      DateTime?
+  endsAt        DateTime?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+}
+
+model PromotionItem {
+  id          String     @id @default(uuid())
+  promotionId String
+  menuItemId  String
+  promotion   Promotion @relation(fields: [promotionId], references: [id])
+  menuItem    MenuItem  @relation(fields: [menuItemId], references: [id])
+
+  @@unique([promotionId, menuItemId])
+}

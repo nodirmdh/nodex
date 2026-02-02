@@ -16,7 +16,26 @@ The platform supports food, retail, pharmacy, and market categories, with delive
 - **Vendorka Mini App**: Orders, menu CRUD, promotions, finance, statistics, and profile.
 
 ## Quick start (placeholder)
-This section will be filled in when runtime setup is defined.
+### Monorepo setup
+1. `npm install`
+
+### API (Fastify)
+1. Create `.env` (see `.env.example` for required keys)
+2. `npm run dev:api`
+2. API runs on `http://HOST:PORT` from `.env` (defaults: `0.0.0.0:3000`)
+
+### Admin Web (React + Vite)
+1. `npm run dev:admin`
+2. Admin runs on `http://localhost:5173`
+
+### Tests
+1. `npm test`
+
+### Database & Prisma
+1. `docker compose up -d`
+2. `npm -w apps/api exec prisma generate`
+3. `npm -w apps/api exec prisma migrate dev`
+4. Production-style migration: `npm -w apps/api exec prisma migrate deploy`
 
 ## Repository structure
 - `docs/`: Product requirements, architecture, domains, plans, and status.

@@ -1,0 +1,16 @@
+version: "3.9"
+services:
+  postgres:
+    image: postgres:16
+    container_name: nodex-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: nodex
+      POSTGRES_PASSWORD: nodex
+      POSTGRES_DB: nodex
+    volumes:
+      - nodex-postgres:/var/lib/postgresql/data
+
+volumes:
+  nodex-postgres:

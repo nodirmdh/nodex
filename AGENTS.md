@@ -7,6 +7,12 @@
 - **Do not break existing behavior**: preserve compatibility unless explicitly approved.
 - **Keep a TODO list**: track follow-ups in `docs/status.md`.
 
+## Stack constraints (LOCKED)
+- Backend code must be TypeScript (Node.js). Do not introduce Python services (FastAPI/Django/etc).
+- Tests must use Vitest/Jest (no pytest).
+- Frontend code must be React + TypeScript (no Vue/Svelte/Angular).
+
+
 ## Read-before-change
 - Always read `docs/requirements.md`, `docs/architecture.md`, and `docs/domains.md` before implementing changes.
 - If requirements are unclear, document assumptions in `docs/status.md`.
