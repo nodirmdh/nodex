@@ -43,10 +43,18 @@
 - **Single backend + single database** for all interfaces.
 - **One vendor = one physical point** with `address_text` and geo coordinates (lat/lng).
 - **Pickup (self-pickup)** is allowed **only for RESTAURANTS** and only if `vendor.supports_pickup = true`.
-- **Delivery fee** for delivery orders:
+
+## Fees (service fee + delivery fee)
+
+- **Service fee** applies to **all orders** (DELIVERY and PICKUP):
+  - `service_fee = 3000`
+- **Delivery fee** applies only to DELIVERY orders:
   - `delivery_fee = 3000 + ceil(distance_km) * 1000`
+  - This implies a **minimum delivery fee of 3000** even for very short distances.
   - `distance_km` is haversine distance from vendor geo to client delivery geo.
-- **Pickup orders**: `delivery_fee = 0`.
+- **Pickup orders**:
+  - `delivery_fee = 0`
+  - `service_fee = 3000`
 - **Delivery comment is required** for every delivery order.
 
 ## Promotions requirements
