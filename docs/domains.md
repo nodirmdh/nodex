@@ -15,6 +15,12 @@
 - **Courier** has a **delivery_mode** of `WALK`, `SCOOTER`, or `CAR`.
 - **OrderTracking** stores courier location updates for active orders.
 - **PromoCode** is global and referenced by **Order** (optional).
+- **Quote**
+  - `items_subtotal`
+  - `service_fee` (always 3000)
+  - `delivery_fee` (0 for PICKUP; min 3000 for DELIVERY)
+  - `discount_total`
+  - `total`
 
 ## Order state machine (with ownership)
 
