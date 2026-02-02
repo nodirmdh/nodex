@@ -23,6 +23,7 @@
 - **Catalog**: Vendors, menus, items, categories.
 - **Orders**: Cart, order creation, state machine, codes.
 - **Pricing/Quote**: Delivery fee, pickup rules, quote breakdown.
+- **Pricing/Quote**: Calculates `service_fee` (always 3000) and `delivery_fee` (delivery-only, min 3000), plus discounts and totals.
 - **Promotions Engine**: Applies promotions in defined order; non-stacking per item units.
 - **Tracking**: Courier location and client tracking.
 - **Reviews**: Ratings and feedback for vendors/couriers.
