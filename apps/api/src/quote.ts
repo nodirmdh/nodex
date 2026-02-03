@@ -2,7 +2,6 @@ import {
   CartLine,
   FulfillmentType,
   GeoPoint,
-  PromotionType,
   QuoteContext,
   QuoteRequest,
   QuoteValidationError,
@@ -16,11 +15,12 @@ export type QuotePayload = {
   fulfillment_type?: string;
   delivery_location?: { lat: number; lng: number };
   delivery_comment?: string | null;
+  vendor_comment?: string | null;
   promo_code?: string | null;
   items?: { menu_item_id: string; quantity: number }[];
 };
 
-export function quoteCart(payload: QuotePayload, context: QuoteContext) {
+export function buildQuoteRequest(payload: QuotePayload, context: QuoteContext): QuoteRequest {
   const vendorId = payload.vendor_id;
   if (!vendorId) {
     throw new QuoteValidationError("vendor_id is required");
@@ -86,18 +86,30 @@ export function quoteCart(payload: QuotePayload, context: QuoteContext) {
     promoCode: payload.promo_code ?? null,
   };
 
-  const promotions = context.promotions.filter(
-    (promo) =>
-      promo.isActive &&
-      (promo.promoType === PromotionType.FIXED_PRICE ||
-        promo.promoType === PromotionType.PERCENT),
-  );
+  return request;
+}
 
-  const quote = calculateQuote(request, vendor, context.menuItems, promotions);
+export function quoteCart(payload: QuotePayload, context: QuoteContext) {
+  const request = buildQuoteRequest(payload, context);
+  const vendor = context.vendors[request.vendorId];
+  if (!vendor) {
+    throw new QuoteNotFoundError("vendor not found");
+  }
+
+  const promotions = context.promotions.filter((promo) => promo.isActive);
+  const quote = calculateQuote(
+    request,
+    vendor,
+    context.menuItems,
+    promotions,
+    context.promoCode ?? null,
+  );
 
   return {
     items_subtotal: quote.itemsSubtotal,
     discount_total: quote.discountTotal,
+    promo_code: quote.promoCode,
+    promo_code_discount: quote.promoCodeDiscount,
     service_fee: quote.serviceFee,
     delivery_fee: quote.deliveryFee,
     total: quote.total,

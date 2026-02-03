@@ -17,6 +17,9 @@ export enum VendorCategory {
 export enum PromotionType {
   FIXED_PRICE = "FIXED_PRICE",
   PERCENT = "PERCENT",
+  COMBO = "COMBO",
+  BUY_X_GET_Y = "BUY_X_GET_Y",
+  GIFT = "GIFT",
 }
 
 export type GeoPoint = {
@@ -43,13 +46,45 @@ export type CartLine = {
   quantity: number;
 };
 
-export type Promotion = {
+type BasePromotion = {
   promotionId: string;
   promoType: PromotionType;
-  itemIds: string[];
-  valueNumeric: number;
   isActive: boolean;
 };
+
+export type FixedPercentPromotion = BasePromotion & {
+  promoType: PromotionType.FIXED_PRICE | PromotionType.PERCENT;
+  itemIds: string[];
+  valueNumeric: number;
+};
+
+export type ComboPromotion = BasePromotion & {
+  promoType: PromotionType.COMBO;
+  comboItems: { itemId: string; quantity: number }[];
+  valueNumeric: number;
+};
+
+export type BuyXGetYPromotion = BasePromotion & {
+  promoType: PromotionType.BUY_X_GET_Y;
+  buyItemId: string;
+  buyQuantity: number;
+  getItemId: string;
+  getQuantity: number;
+  discountPercent: number;
+};
+
+export type GiftPromotion = BasePromotion & {
+  promoType: PromotionType.GIFT;
+  giftItemId: string;
+  giftQuantity: number;
+  minOrderAmount: number;
+};
+
+export type Promotion =
+  | FixedPercentPromotion
+  | ComboPromotion
+  | BuyXGetYPromotion
+  | GiftPromotion;
 
 export type QuoteRequest = {
   vendorId: string;
@@ -63,6 +98,9 @@ export type QuoteRequest = {
 export type QuoteResult = {
   itemsSubtotal: number;
   discountTotal: number;
+  promoCode: string | null;
+  promoCodeDiscount: number;
+  promoCodeApplied: boolean;
   serviceFee: number;
   deliveryFee: number;
   total: number;
@@ -70,6 +108,7 @@ export type QuoteResult = {
   comboCount: number;
   buyxgetyCount: number;
   giftCount: number;
+  lineItems: QuoteLineItem[];
 };
 
 export class QuoteValidationError extends Error {
@@ -80,6 +119,28 @@ export type QuoteContext = {
   vendors: Record<string, VendorInfo>;
   menuItems: Record<string, MenuItem>;
   promotions: Promotion[];
+  promoCode?: PromoCode | null;
+};
+
+export type PromoCode = {
+  id: string;
+  code: string;
+  type: "PERCENT" | "FIXED";
+  value: number;
+  isActive: boolean;
+  startsAt: Date | null;
+  endsAt: Date | null;
+  usageLimit: number | null;
+  usedCount: number;
+  minOrderSum: number | null;
+};
+
+export type QuoteLineItem = {
+  menuItemId: string;
+  quantity: number;
+  unitPrice: number;
+  discountAmount: number;
+  isGift: boolean;
 };
 
 export function haversineKm(origin: GeoPoint, destination: GeoPoint): number {
@@ -134,7 +195,7 @@ function validateDeliveryRules(request: QuoteRequest): void {
   }
 }
 
-function perUnitDiscount(unitPrice: number, promotions: Promotion[]): number {
+function perUnitDiscount(unitPrice: number, promotions: FixedPercentPromotion[]): number {
   let bestDiscount = 0;
   for (const promo of promotions) {
     if (!promo.isActive) {
@@ -151,27 +212,166 @@ function perUnitDiscount(unitPrice: number, promotions: Promotion[]): number {
   return bestDiscount;
 }
 
+type DiscountResult = {
+  discountTotal: number;
+  promoItemsCount: number;
+  comboCount: number;
+  buyxgetyCount: number;
+  giftCount: number;
+  lineDiscounts: Record<string, number>;
+  giftItems: { menuItemId: string; quantity: number }[];
+};
+
 function calculateDiscounts(
   menuItems: Record<string, MenuItem>,
   requestItems: CartLine[],
   promotions: Promotion[],
-): { discountTotal: number; promoItemsCount: number } {
+  itemsSubtotal: number,
+): DiscountResult {
   let discountTotal = 0;
-  let promoItemsCount = 0;
+  let comboCount = 0;
+  let buyxgetyCount = 0;
+  let giftCount = 0;
+  const lineDiscounts: Record<string, number> = {};
+  const giftItems: { menuItemId: string; quantity: number }[] = [];
 
+  const remainingQty: Record<string, number> = {};
   for (const line of requestItems) {
-    const menuItem = menuItems[line.menuItemId];
-    const applicablePromos = promotions.filter(
-      (promo) => promo.isActive && promo.itemIds.includes(line.menuItemId),
-    );
-    const perUnit = perUnitDiscount(menuItem.price, applicablePromos);
-    if (perUnit > 0) {
-      promoItemsCount += 1;
-      discountTotal += perUnit * line.quantity;
+    remainingQty[line.menuItemId] = (remainingQty[line.menuItemId] ?? 0) + line.quantity;
+    lineDiscounts[line.menuItemId] = 0;
+  }
+
+  const comboPromos = promotions.filter(
+    (promo): promo is ComboPromotion => promo.promoType === PromotionType.COMBO && promo.isActive,
+  );
+  const buyxgetyPromos = promotions.filter(
+    (promo): promo is BuyXGetYPromotion =>
+      promo.promoType === PromotionType.BUY_X_GET_Y && promo.isActive,
+  );
+  const fixedPercentPromos = promotions.filter(
+    (promo): promo is FixedPercentPromotion =>
+      (promo.promoType === PromotionType.FIXED_PRICE ||
+        promo.promoType === PromotionType.PERCENT) &&
+      promo.isActive,
+  );
+  const giftPromos = promotions.filter(
+    (promo): promo is GiftPromotion => promo.promoType === PromotionType.GIFT && promo.isActive,
+  );
+
+  for (const combo of comboPromos) {
+    if (combo.comboItems.length === 0) {
+      continue;
+    }
+
+    const maxSets = combo.comboItems.reduce((minSets, item) => {
+      const available = remainingQty[item.itemId] ?? 0;
+      return Math.min(minSets, Math.floor(available / item.quantity));
+    }, Number.POSITIVE_INFINITY);
+
+    if (!Number.isFinite(maxSets) || maxSets <= 0) {
+      continue;
+    }
+
+    for (let setIndex = 0; setIndex < maxSets; setIndex += 1) {
+      let setTotal = 0;
+      for (const item of combo.comboItems) {
+        const menuItem = menuItems[item.itemId];
+        if (!menuItem) {
+          continue;
+        }
+        setTotal += menuItem.price * item.quantity;
+      }
+
+      const discount = Math.max(setTotal - combo.valueNumeric, 0);
+      if (discount <= 0) {
+        break;
+      }
+
+      let remainingDiscount = discount;
+      combo.comboItems.forEach((item, index) => {
+        const menuItem = menuItems[item.itemId];
+        if (!menuItem) {
+          return;
+        }
+        const itemTotal = menuItem.price * item.quantity;
+        const share =
+          index === combo.comboItems.length - 1
+            ? remainingDiscount
+            : Math.floor((discount * itemTotal) / setTotal);
+        remainingDiscount -= share;
+        lineDiscounts[item.itemId] = (lineDiscounts[item.itemId] ?? 0) + share;
+      });
+
+      for (const item of combo.comboItems) {
+        remainingQty[item.itemId] = Math.max(0, (remainingQty[item.itemId] ?? 0) - item.quantity);
+      }
+
+      discountTotal += discount;
+      comboCount += 1;
     }
   }
 
-  return { discountTotal, promoItemsCount };
+  for (const promo of buyxgetyPromos) {
+    const availableBuy = remainingQty[promo.buyItemId] ?? 0;
+    const availableGet = remainingQty[promo.getItemId] ?? 0;
+    const possibleSets = Math.min(
+      Math.floor(availableBuy / promo.buyQuantity),
+      Math.floor(availableGet / promo.getQuantity),
+    );
+    if (possibleSets <= 0) {
+      continue;
+    }
+
+    const menuItem = menuItems[promo.getItemId];
+    if (!menuItem) {
+      continue;
+    }
+
+    const discountedUnits = possibleSets * promo.getQuantity;
+    const perUnit = Math.floor((menuItem.price * promo.discountPercent) / 100);
+    const discount = perUnit * discountedUnits;
+
+    if (discount > 0) {
+      lineDiscounts[promo.getItemId] =
+        (lineDiscounts[promo.getItemId] ?? 0) + discount;
+      discountTotal += discount;
+      buyxgetyCount += possibleSets;
+      remainingQty[promo.getItemId] = Math.max(0, availableGet - discountedUnits);
+    }
+  }
+
+  for (const line of requestItems) {
+    const menuItem = menuItems[line.menuItemId];
+    const remaining = remainingQty[line.menuItemId] ?? 0;
+    if (!menuItem || remaining <= 0) {
+      continue;
+    }
+    const applicablePromos = fixedPercentPromos.filter((promo) =>
+      promo.itemIds.includes(line.menuItemId),
+    );
+    const perUnit = perUnitDiscount(menuItem.price, applicablePromos);
+    if (perUnit > 0) {
+      lineDiscounts[line.menuItemId] =
+        (lineDiscounts[line.menuItemId] ?? 0) + perUnit * remaining;
+      discountTotal += perUnit * remaining;
+    }
+  }
+
+  for (const promo of giftPromos) {
+    if (itemsSubtotal < promo.minOrderAmount) {
+      continue;
+    }
+    const menuItem = menuItems[promo.giftItemId];
+    if (!menuItem) {
+      continue;
+    }
+    giftItems.push({ menuItemId: promo.giftItemId, quantity: promo.giftQuantity });
+    giftCount += promo.giftQuantity;
+  }
+
+  const promoItemsCount = Object.values(lineDiscounts).filter((amount) => amount > 0).length;
+
+  return { discountTotal, promoItemsCount, comboCount, buyxgetyCount, giftCount, lineDiscounts, giftItems };
 }
 
 export function calculateQuote(
@@ -179,6 +379,7 @@ export function calculateQuote(
   vendor: VendorInfo,
   menuItems: Record<string, MenuItem>,
   promotions: Promotion[],
+  promoCode?: PromoCode | null,
 ): QuoteResult {
   validatePickupRules(request.fulfillmentType, vendor);
   validateDeliveryRules(request);
@@ -189,28 +390,99 @@ export function calculateQuote(
     itemsSubtotal += menuItem.price * line.quantity;
   }
 
-  const { discountTotal, promoItemsCount } = calculateDiscounts(
-    menuItems,
-    request.items,
-    promotions,
-  );
+  const {
+    discountTotal,
+    promoItemsCount,
+    comboCount,
+    buyxgetyCount,
+    giftCount,
+    lineDiscounts,
+    giftItems,
+  } = calculateDiscounts(menuItems, request.items, promotions, itemsSubtotal);
 
   const deliveryFee = calculateDeliveryFee(
     request.fulfillmentType,
     vendor.geo,
     request.deliveryLocation,
   );
-  const total = itemsSubtotal - discountTotal + SERVICE_FEE_AMOUNT + deliveryFee;
+  const promoEvaluation = evaluatePromoCode(
+    promoCode ?? null,
+    itemsSubtotal,
+    discountTotal,
+  );
+  const promoCodeDiscount = promoEvaluation.discount;
+  const total = Math.max(
+    itemsSubtotal - discountTotal - promoCodeDiscount + SERVICE_FEE_AMOUNT + deliveryFee,
+    0,
+  );
+
+  const lineItems: QuoteLineItem[] = request.items.map((line) => ({
+    menuItemId: line.menuItemId,
+    quantity: line.quantity,
+    unitPrice: menuItems[line.menuItemId].price,
+    discountAmount: lineDiscounts[line.menuItemId] ?? 0,
+    isGift: false,
+  }));
+
+  for (const gift of giftItems) {
+    lineItems.push({
+      menuItemId: gift.menuItemId,
+      quantity: gift.quantity,
+      unitPrice: 0,
+      discountAmount: 0,
+      isGift: true,
+    });
+  }
 
   return {
     itemsSubtotal,
     discountTotal,
+    promoCode: promoEvaluation.applied ? promoCode?.code ?? null : null,
+    promoCodeDiscount,
+    promoCodeApplied: promoEvaluation.applied,
     serviceFee: SERVICE_FEE_AMOUNT,
     deliveryFee,
     total,
     promoItemsCount,
-    comboCount: 0,
-    buyxgetyCount: 0,
-    giftCount: 0,
+    comboCount,
+    buyxgetyCount,
+    giftCount,
+    lineItems,
   };
+}
+
+function evaluatePromoCode(
+  promoCode: PromoCode | null,
+  itemsSubtotal: number,
+  discountTotal: number,
+): { discount: number; applied: boolean } {
+  if (!promoCode) {
+    return { discount: 0, applied: false };
+  }
+  if (!promoCode.isActive) {
+    return { discount: 0, applied: false };
+  }
+
+  const now = new Date();
+  if (promoCode.startsAt && now < promoCode.startsAt) {
+    return { discount: 0, applied: false };
+  }
+  if (promoCode.endsAt && now > promoCode.endsAt) {
+    return { discount: 0, applied: false };
+  }
+  if (promoCode.usageLimit !== null && promoCode.usedCount >= promoCode.usageLimit) {
+    return { discount: 0, applied: false };
+  }
+  if (promoCode.minOrderSum !== null && itemsSubtotal < promoCode.minOrderSum) {
+    return { discount: 0, applied: false };
+  }
+
+  const base = Math.max(itemsSubtotal - discountTotal, 0);
+  if (promoCode.type === "PERCENT") {
+    return {
+      discount: Math.min(base, Math.floor((base * promoCode.value) / 100)),
+      applied: true,
+    };
+  }
+  return { discount: Math.min(base, promoCode.value), applied: true };
 }

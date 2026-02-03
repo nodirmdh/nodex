@@ -13,6 +13,7 @@
   "fulfillment_type": "DELIVERY",
   "delivery_location": { "lat": 55.75, "lng": 37.62 },
   "delivery_comment": "Позвонить по приезду",
+  "vendor_comment": "",
   "items": [
     { "menu_item_id": "uuid", "quantity": 2 }
   ],
@@ -27,6 +28,7 @@
   - `lat` (number)
   - `lng` (number)
 - `delivery_comment` (string, required для DELIVERY): комментарий для курьера.
+- `vendor_comment` (string, optional): комментарий для ресторана.
 - `items` (array, required): позиции корзины.
   - `menu_item_id` (string)
   - `quantity` (integer, >0)
@@ -65,6 +67,7 @@
   "fulfillment_type": "DELIVERY",
   "delivery_location": { "lat": 55.75, "lng": 37.62 },
   "delivery_comment": "Охрана у шлагбаума",
+  "vendor_comment": "",
   "items": [
     { "menu_item_id": "b1b75d8b-48b3-45e0-9c25-5a3fbd40316b", "quantity": 2 }
   ]
@@ -107,3 +110,8 @@
   "gift_count": 0
 }
 ```
+
+
+
+
+

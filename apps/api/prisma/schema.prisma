@@ -22,6 +22,30 @@ enum PromotionType {
   GIFT
 }
 
+enum PromoCodeType {
+  PERCENT
+  FIXED
+}
+
+enum FulfillmentType {
+  DELIVERY
+  PICKUP
+}
+
+enum OrderStatus {
+  NEW
+  ACCEPTED
+  COOKING
+  READY
+  READY_FOR_PICKUP
+  PICKED_UP_BY_CUSTOMER
+  COURIER_ACCEPTED
+  PICKED_UP
+  DELIVERED
+  CANCELLED
+  CANCELLED_BY_VENDOR
+}
+
 model Vendor {
   id             String         @id @default(uuid())
   category       VendorCategory
@@ -31,6 +55,7 @@ model Vendor {
   geoLng         Float
   menuItems      MenuItem[]
   promotions     Promotion[]
+  orders         Order[]
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 }
@@ -42,6 +67,11 @@ model MenuItem {
   price         Int
   isAvailable   Boolean         @default(true)
   promotionItems PromotionItem[]
+  comboItems    PromotionComboItem[]
+  buyXItems     PromotionBuyXGetY[] @relation("BuyItem")
+  getYItems     PromotionBuyXGetY[] @relation("GetItem")
+  giftPromotions PromotionGift[] @relation("GiftItem")
+  orderItems    OrderItem[]
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 }
@@ -54,6 +84,9 @@ model Promotion {
   valueNumeric  Int
   isActive      Boolean         @default(true)
   promotionItems PromotionItem[]
+  comboItems    PromotionComboItem[]
+  buyXGetY      PromotionBuyXGetY?
+  gift          PromotionGift?
   startsAt      DateTime?
   endsAt        DateTime?
   createdAt     DateTime        @default(now())
@@ -68,4 +101,133 @@ model PromotionItem {
   menuItem    MenuItem  @relation(fields: [menuItemId], references: [id])
 
   @@unique([promotionId, menuItemId])
+}
+
+model PromotionComboItem {
+  id          String     @id @default(uuid())
+  promotionId String
+  menuItemId  String
+  quantity    Int
+  promotion   Promotion @relation(fields: [promotionId], references: [id])
+  menuItem    MenuItem  @relation(fields: [menuItemId], references: [id])
+
+  @@unique([promotionId, menuItemId])
+}
+
+model PromotionBuyXGetY {
+  id              String     @id @default(uuid())
+  promotionId     String     @unique
+  buyItemId       String
+  buyQuantity     Int
+  getItemId       String
+  getQuantity     Int
+  discountPercent Int
+  promotion       Promotion  @relation(fields: [promotionId], references: [id])
+  buyItem         MenuItem   @relation("BuyItem", fields: [buyItemId], references: [id])
+  getItem         MenuItem   @relation("GetItem", fields: [getItemId], references: [id])
+}
+
+model PromotionGift {
+  id              String     @id @default(uuid())
+  promotionId     String     @unique
+  giftItemId      String
+  giftQuantity    Int
+  minOrderAmount  Int
+  promotion       Promotion  @relation(fields: [promotionId], references: [id])
+  giftItem        MenuItem   @relation("GiftItem", fields: [giftItemId], references: [id])
+}
+
+model Order {
+  id              String          @id @default(uuid())
+  vendorId        String
+  vendor          Vendor          @relation(fields: [vendorId], references: [id])
+  clientId        String?
+  courierId       String?
+  fulfillmentType FulfillmentType
+  status          OrderStatus
+  deliveryLat     Float?
+  deliveryLng     Float?
+  deliveryComment String?
+  vendorComment   String?
+  itemsSubtotal   Int
+  discountTotal   Int
+  promoCodeId     String?
+  promoCode       PromoCode?      @relation(fields: [promoCodeId], references: [id])
+  promoCodeType   PromoCodeType?
+  promoCodeValue  Int?
+  promoCodeDiscount Int          @default(0)
+  serviceFee      Int
+  deliveryFee     Int
+  total           Int
+  promoItemsCount Int
+  comboCount      Int
+  buyxgetyCount   Int
+  giftCount       Int
+  pickupCodeHash  String
+  pickupCodeSalt  String
+  deliveryCodeHash String
+  deliveryCodeSalt String
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  items           OrderItem[]
+  events          DomainEvent[]
+  tracking        OrderTracking[]
+}
+
+model OrderItem {
+  id             String     @id @default(uuid())
+  orderId        String
+  menuItemId     String
+  order          Order      @relation(fields: [orderId], references: [id])
+  menuItem       MenuItem   @relation(fields: [menuItemId], references: [id])
+  price          Int
+  quantity       Int
+  isGift         Boolean    @default(false)
+  discountAmount Int        @default(0)
+}
+
+model DomainEvent {
+  id        String   @id @default(uuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id])
+  eventType String
+  payload   Json?
+  createdAt DateTime @default(now())
+}
+
+model PromoCode {
+  id          String       @id @default(uuid())
+  code        String       @unique
+  type        PromoCodeType
+  value       Int
+  isActive    Boolean      @default(true)
+  startsAt    DateTime?
+  endsAt      DateTime?
+  usageLimit  Int?
+  usedCount   Int          @default(0)
+  minOrderSum Int?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  orders      Order[]
+  clientCodes ClientPromoCode[]
+}
+
+model ClientPromoCode {
+  id          String    @id @default(uuid())
+  clientId    String
+  promoCodeId String
+  promoCode   PromoCode @relation(fields: [promoCodeId], references: [id])
+  createdAt   DateTime  @default(now())
+
+  @@unique([clientId, promoCodeId])
+}
+
+model OrderTracking {
+  id        String   @id @default(uuid())
+  orderId   String
+  courierId String
+  order     Order    @relation(fields: [orderId], references: [id])
+  lat       Float
+  lng       Float
+  createdAt DateTime @default(now())
 }

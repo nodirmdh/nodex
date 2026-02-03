@@ -1,6 +1,11 @@
 import { PrismaClient } from "@prisma/client";
 
 import {
+  BuyXGetYPromotion,
+  ComboPromotion,
+  FixedPercentPromotion,
+  PromoCode,
+  GiftPromotion,
   MenuItem,
   Promotion,
   PromotionType,
@@ -50,28 +55,130 @@ export class PrismaQuoteRepository implements QuoteContextRepository {
     vendorId: string,
     menuItemIds: string[],
   ): Promise<Promotion[]> {
-    if (menuItemIds.length === 0) {
-      return [];
-    }
-
     const promotions = await this.prisma.promotion.findMany({
       where: {
         vendorId,
         isActive: true,
-        promoType: { in: ["FIXED_PRICE", "PERCENT"] },
-        promotionItems: {
-          some: { menuItemId: { in: menuItemIds } },
-        },
       },
-      include: { promotionItems: true },
+      include: {
+        promotionItems: true,
+        comboItems: true,
+        buyXGetY: true,
+        gift: true,
+      },
     });
 
-    return promotions.map((promo) => ({
-      promotionId: promo.id,
-      promoType: promo.promoType as PromotionType,
-      itemIds: promo.promotionItems.map((item) => item.menuItemId),
-      valueNumeric: promo.valueNumeric,
+    const mapped: Promotion[] = [];
+    for (const promo of promotions) {
+      if (
+        promo.promoType === "FIXED_PRICE" ||
+        promo.promoType === "PERCENT"
+      ) {
+        const itemIds = promo.promotionItems.map((item) => item.menuItemId);
+        if (itemIds.length === 0) {
+          continue;
+        }
+        if (
+          menuItemIds.length > 0 &&
+          !itemIds.some((itemId) => menuItemIds.includes(itemId))
+        ) {
+          continue;
+        }
+        mapped.push({
+          promotionId: promo.id,
+          promoType: promo.promoType as PromotionType,
+          itemIds,
+          valueNumeric: promo.valueNumeric,
+          isActive: promo.isActive,
+        } satisfies FixedPercentPromotion);
+        continue;
+      }
+
+      if (promo.promoType === "COMBO") {
+        if (promo.comboItems.length === 0) {
+          continue;
+        }
+        const comboItems = promo.comboItems.map((item) => ({
+          itemId: item.menuItemId,
+          quantity: item.quantity,
+        }));
+        if (
+          menuItemIds.length > 0 &&
+          !comboItems.some((item) => menuItemIds.includes(item.itemId))
+        ) {
+          continue;
+        }
+        mapped.push({
+          promotionId: promo.id,
+          promoType: PromotionType.COMBO,
+          comboItems,
+          valueNumeric: promo.valueNumeric,
+          isActive: promo.isActive,
+        } satisfies ComboPromotion);
+        continue;
+      }
+
+      if (promo.promoType === "BUY_X_GET_Y") {
+        if (!promo.buyXGetY) {
+          continue;
+        }
+        const buyX = promo.buyXGetY;
+        if (
+          menuItemIds.length > 0 &&
+          !menuItemIds.includes(buyX.buyItemId) &&
+          !menuItemIds.includes(buyX.getItemId)
+        ) {
+          continue;
+        }
+        mapped.push({
+          promotionId: promo.id,
+          promoType: PromotionType.BUY_X_GET_Y,
+          buyItemId: buyX.buyItemId,
+          buyQuantity: buyX.buyQuantity,
+          getItemId: buyX.getItemId,
+          getQuantity: buyX.getQuantity,
+          discountPercent: buyX.discountPercent,
+          isActive: promo.isActive,
+        } satisfies BuyXGetYPromotion);
+        continue;
+      }
+
+      if (promo.promoType === "GIFT") {
+        if (!promo.gift) {
+          continue;
+        }
+        mapped.push({
+          promotionId: promo.id,
+          promoType: PromotionType.GIFT,
+          giftItemId: promo.gift.giftItemId,
+          giftQuantity: promo.gift.giftQuantity,
+          minOrderAmount: promo.gift.minOrderAmount,
+          isActive: promo.isActive,
+        } satisfies GiftPromotion);
+      }
+    }
+
+    return mapped;
+  }
+
+  async getPromoCodeByCode(code: string): Promise<PromoCode | null> {
+    const promo = await this.prisma.promoCode.findUnique({
+      where: { code },
+    });
+    if (!promo) {
+      return null;
+    }
+    return {
+      id: promo.id,
+      code: promo.code,
+      type: promo.type as "PERCENT" | "FIXED",
+      value: promo.value,
       isActive: promo.isActive,
-    }));
+      startsAt: promo.startsAt,
+      endsAt: promo.endsAt,
+      usageLimit: promo.usageLimit,
+      usedCount: promo.usedCount,
+      minOrderSum: promo.minOrderSum,
+    };
   }
 }

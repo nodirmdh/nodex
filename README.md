@@ -25,7 +25,8 @@ The platform supports food, retail, pharmacy, and market categories, with delive
 2. API runs on `http://HOST:PORT` from `.env` (defaults: `0.0.0.0:3000`)
 
 ### Admin Web (React + Vite)
-1. `npm run dev:admin`
+1. Set `VITE_API_URL` in `apps/admin-web/.env` (defaults to `http://localhost:3000`)
+2. `npm run dev:admin`
 2. Admin runs on `http://localhost:5173`
 
 ### Tests
@@ -48,3 +49,5 @@ The platform supports food, retail, pharmacy, and market categories, with delive
 3. Keep changes small and focused; prefer PR-sized increments.
 4. Add or update tests for pricing and promotions logic.
 
+## Core concept
+Read `docs/PROJECT_OVERVIEW.md` — it defines the single-backend single-DB core and how all apps share the same Order lifecycle.

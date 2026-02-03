@@ -16,6 +16,11 @@
 - Apply saved promo codes (optional) at order level.
 - Track active order status and courier location after courier acceptance.
 - View order history and ratings.
+- Provide an optional **vendor_comment** (special instructions) for the order:
+  - e.g., "no onions", "no spicy", "allergy notes", "sauce separately"
+  - Visible to the vendor (Vendorka) and admin.
+  - Separate from delivery_comment (landmark/instructions).
+
 
 ### Courier (Telegram Mini App)
 - Accept available orders.

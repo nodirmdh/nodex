@@ -154,6 +154,8 @@ describe("quoteCart", () => {
 
     expect(result.discount_total).toBe(1000);
     expect(result.promo_items_count).toBe(1);
+    expect(result.promo_code).toBeNull();
+    expect(result.promo_code_discount).toBe(0);
   });
 
   it("applies fixed price promotion correctly", () => {

@@ -27,3 +27,10 @@
 - Enforce **RBAC** for admin/vendor/courier/client actions.
 - Apply **rate limiting** for code entry attempts and sensitive endpoints.
 
+## Autonomous mode rules
+- Agents must rely on docs as the source of truth.
+- If multiple docs conflict, priority:
+  requirements.md > domains.md > architecture.md > PLANS.md > status.md
+- Agents must stop execution after finishing current phase.
+
+
