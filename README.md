@@ -14,6 +14,7 @@ The platform supports food, retail, pharmacy, and market categories, with delive
 - **Client Mini App**: Browsing, ordering, promo codes, checkout, and live tracking.
 - **Courier Mini App**: Accept → Picked Up → Delivered workflow with code verification and live tracking.
 - **Vendorka Mini App**: Orders, menu CRUD, promotions, finance, statistics, and profile.
+- **Shared Navigation Module**: In-app map with pickup/dropoff/courier markers used by client and courier miniapps.
 
 ## Quick start (placeholder)
 ### Monorepo setup
@@ -29,6 +30,21 @@ The platform supports food, retail, pharmacy, and market categories, with delive
 2. `npm run dev:admin`
 2. Admin runs on `http://localhost:5173`
 
+### Client Mini App (React + Vite)
+1. Set `VITE_API_URL`, `VITE_DEV_MODE`, `VITE_DEV_CLIENT_ID`, `VITE_SUPPORT_TG_USERNAME` in `apps/client-miniapp/.env`
+2. `npm run dev:client`
+3. Client app runs on `http://localhost:5174`
+
+### Courier Mini App (React + Vite)
+1. Set `VITE_API_URL`, `VITE_DEV_MODE`, `VITE_DEV_COURIER_ID` in `apps/courier-miniapp/.env`
+2. `npm run dev:courier`
+3. Courier app runs on `http://localhost:5175`
+
+### Vendor Web (React + Vite)
+1. Set `VITE_API_URL`, `VITE_DEV_MODE` in `apps/vendor-web/.env`
+2. `npm run dev:vendor`
+3. Vendor web runs on `http://localhost:5176`
+
 ### Tests
 1. `npm test`
 
@@ -36,7 +52,13 @@ The platform supports food, retail, pharmacy, and market categories, with delive
 1. `docker compose up -d`
 2. `npm -w apps/api exec prisma generate`
 3. `npm -w apps/api exec prisma migrate dev`
-4. Production-style migration: `npm -w apps/api exec prisma migrate deploy`
+4. `npm run seed`
+5. Production-style migration: `npm -w apps/api exec prisma migrate deploy`
+
+### DEV headers (local)
+- Set `DEV_MODE=1` in `apps/api/.env`.
+- Mini apps can send `x-dev-user: client|courier|vendor`.
+- Vendor web also needs `x-vendor-id: <vendor_uuid>` to scope vendor data.
 
 ## Repository structure
 - `docs/`: Product requirements, architecture, domains, plans, and status.

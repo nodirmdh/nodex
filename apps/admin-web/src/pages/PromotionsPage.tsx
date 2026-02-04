@@ -66,6 +66,7 @@ export function PromotionsPage() {
               <th>Vendor</th>
               <th>Type</th>
               <th>Value</th>
+              <th>Priority</th>
               <th>Active</th>
               <th>Items</th>
             </tr>
@@ -77,8 +78,9 @@ export function PromotionsPage() {
                 <td>{promo.vendor_id}</td>
                 <td>{promo.promo_type}</td>
                 <td>{promo.value_numeric}</td>
+                <td>{promo.priority ?? 0}</td>
                 <td>{promo.is_active ? "Yes" : "No"}</td>
-                <td>{promo.items.join(", ") || "-"}</td>
+                <td>{promo.items?.join(", ") || "-"}</td>
               </tr>
             ))}
           </tbody>

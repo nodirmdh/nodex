@@ -42,6 +42,25 @@ body {
   font-weight: 600;
 }
 
+.tabs {
+  display: flex;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.tabs button {
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  padding: 6px 12px;
+  border-radius: 999px;
+}
+
+.tabs button.active {
+  background: #2563eb;
+  color: #fff;
+  border-color: #2563eb;
+}
+
 .content {
   padding: 32px;
 }
@@ -78,6 +97,13 @@ body {
   gap: 16px;
   align-items: flex-end;
   margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+
+.inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
   flex-wrap: wrap;
 }
 
@@ -150,7 +176,22 @@ button.link.danger {
 }
 
 .modal input,
-.modal select {
+.modal select,
+.modal textarea {
+  padding: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.details-grid label,
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+}
+
+textarea {
   padding: 8px;
   border: 1px solid #e2e8f0;
   border-radius: 6px;

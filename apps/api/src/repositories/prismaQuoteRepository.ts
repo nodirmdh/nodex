@@ -55,10 +55,15 @@ export class PrismaQuoteRepository implements QuoteContextRepository {
     vendorId: string,
     menuItemIds: string[],
   ): Promise<Promotion[]> {
+    const now = new Date();
     const promotions = await this.prisma.promotion.findMany({
       where: {
         vendorId,
         isActive: true,
+        AND: [
+          { OR: [{ startsAt: null }, { startsAt: { lte: now } }] },
+          { OR: [{ endsAt: null }, { endsAt: { gte: now } }] },
+        ],
       },
       include: {
         promotionItems: true,
@@ -89,6 +94,7 @@ export class PrismaQuoteRepository implements QuoteContextRepository {
           promoType: promo.promoType as PromotionType,
           itemIds,
           valueNumeric: promo.valueNumeric,
+          priority: promo.priority,
           isActive: promo.isActive,
         } satisfies FixedPercentPromotion);
         continue;
@@ -113,6 +119,7 @@ export class PrismaQuoteRepository implements QuoteContextRepository {
           promoType: PromotionType.COMBO,
           comboItems,
           valueNumeric: promo.valueNumeric,
+          priority: promo.priority,
           isActive: promo.isActive,
         } satisfies ComboPromotion);
         continue;
@@ -138,6 +145,7 @@ export class PrismaQuoteRepository implements QuoteContextRepository {
           getItemId: buyX.getItemId,
           getQuantity: buyX.getQuantity,
           discountPercent: buyX.discountPercent,
+          priority: promo.priority,
           isActive: promo.isActive,
         } satisfies BuyXGetYPromotion);
         continue;
@@ -153,6 +161,7 @@ export class PrismaQuoteRepository implements QuoteContextRepository {
           giftItemId: promo.gift.giftItemId,
           giftQuantity: promo.gift.giftQuantity,
           minOrderAmount: promo.gift.minOrderAmount,
+          priority: promo.priority,
           isActive: promo.isActive,
         } satisfies GiftPromotion);
       }
@@ -162,8 +171,14 @@ export class PrismaQuoteRepository implements QuoteContextRepository {
   }
 
   async getPromoCodeByCode(code: string): Promise<PromoCode | null> {
-    const promo = await this.prisma.promoCode.findUnique({
-      where: { code },
+    const normalized = code.trim().toUpperCase();
+    const promo = await this.prisma.promoCode.findFirst({
+      where: {
+        code: {
+          equals: normalized,
+          mode: "insensitive",
+        },
+      },
     });
     if (!promo) {
       return null;

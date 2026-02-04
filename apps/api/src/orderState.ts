@@ -110,3 +110,20 @@ export function assertTransition(
     throw new OrderStateError("Pickup transitions are only allowed for pickup orders");
   }
 }
+
+export function canTransition(
+  from: OrderStatus,
+  to: OrderStatus,
+  fulfillmentType: FulfillmentType,
+): boolean {
+  const actors: OrderActorRole[] = ["VENDOR", "COURIER", "CLIENT", "SYSTEM", "ADMIN"];
+  for (const actor of actors) {
+    try {
+      assertTransition(from, to, actor, fulfillmentType);
+      return true;
+    } catch {
+      // try next actor
+    }
+  }
+  return false;
+}

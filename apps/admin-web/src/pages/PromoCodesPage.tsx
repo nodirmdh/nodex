@@ -1,38 +1,45 @@
 import { useEffect, useState } from "react";
 
-type PromoCode = {
-  id: string;
-  code: string;
-  discount_percent: number;
-  is_active: boolean;
-};
+import { ApiClient, PromoCode } from "../api/client";
 
-const STORAGE_KEY = "nodex_admin_promo_codes";
+const client = new ApiClient({
+  onUnauthorized: () => {
+    window.location.href = "/login";
+  },
+});
 
 export function PromoCodesPage() {
   const [codes, setCodes] = useState<PromoCode[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [form, setForm] = useState({
     code: "",
-    discount_percent: "10",
+    type: "PERCENT",
+    value: "10",
     is_active: true,
   });
 
   useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (stored) {
-      setCodes(JSON.parse(stored) as PromoCode[]);
-    }
+    const load = async () => {
+      setIsLoading(true);
+      setError(null);
+      try {
+        const data = await client.listPromoCodes();
+        setCodes(data);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load promo codes");
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    void load();
   }, []);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(codes));
-  }, [codes]);
 
   const openCreate = () => {
     setEditingId(null);
-    setForm({ code: "", discount_percent: "10", is_active: true });
+    setForm({ code: "", type: "PERCENT", value: "10", is_active: true });
     setShowModal(true);
   };
 
@@ -40,35 +47,54 @@ export function PromoCodesPage() {
     setEditingId(promo.id);
     setForm({
       code: promo.code,
-      discount_percent: String(promo.discount_percent),
+      type: promo.type,
+      value: String(promo.value),
       is_active: promo.is_active,
     });
     setShowModal(true);
   };
 
-  const handleSubmit = () => {
-    const payload: PromoCode = {
-      id: editingId ?? crypto.randomUUID(),
-      code: form.code.trim(),
-      discount_percent: Number(form.discount_percent),
-      is_active: form.is_active,
-    };
-
-    if (!payload.code) {
+  const handleSubmit = async () => {
+    const code = form.code.trim();
+    const value = Number(form.value);
+    if (!code || !Number.isFinite(value)) {
+      setError("Code and value are required.");
       return;
     }
 
-    setCodes((prev) => {
+    try {
+      setError(null);
       if (editingId) {
-        return prev.map((item) => (item.id === editingId ? payload : item));
+        const updated = await client.updatePromoCode(editingId, {
+          code,
+          type: form.type as "PERCENT" | "FIXED",
+          value,
+          is_active: form.is_active,
+        });
+        setCodes((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      } else {
+        const created = await client.createPromoCode({
+          code,
+          type: form.type as "PERCENT" | "FIXED",
+          value,
+          is_active: form.is_active,
+        });
+        setCodes((prev) => [created, ...prev]);
       }
-      return [payload, ...prev];
-    });
-    setShowModal(false);
+      setShowModal(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save promo code");
+    }
   };
 
-  const handleDelete = (id: string) => {
-    setCodes((prev) => prev.filter((item) => item.id !== id));
+  const handleDelete = async (id: string) => {
+    try {
+      setError(null);
+      await client.deletePromoCode(id);
+      setCodes((prev) => prev.filter((item) => item.id !== id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to delete promo code");
+    }
   };
 
   return (
@@ -80,11 +106,16 @@ export function PromoCodesPage() {
         </button>
       </div>
 
+      {error && <div className="error-banner">{error}</div>}
+      {isLoading ? (
+        <p>Loading promo codes...</p>
+      ) : (
       <table className="data-table">
         <thead>
           <tr>
             <th>Code</th>
-            <th>Discount %</th>
+            <th>Type</th>
+            <th>Value</th>
             <th>Active</th>
             <th />
           </tr>
@@ -93,7 +124,8 @@ export function PromoCodesPage() {
           {codes.map((promo) => (
             <tr key={promo.id}>
               <td>{promo.code}</td>
-              <td>{promo.discount_percent}</td>
+              <td>{promo.type}</td>
+              <td>{promo.value}</td>
               <td>{promo.is_active ? "Yes" : "No"}</td>
               <td>
                 <button className="link" onClick={() => openEdit(promo)}>
@@ -107,11 +139,12 @@ export function PromoCodesPage() {
           ))}
           {codes.length === 0 && (
             <tr>
-              <td colSpan={4}>No promo codes yet.</td>
+              <td colSpan={5}>No promo codes yet.</td>
             </tr>
           )}
         </tbody>
       </table>
+      )}
 
       {showModal && (
         <div className="modal-backdrop">
@@ -126,12 +159,22 @@ export function PromoCodesPage() {
               />
             </label>
             <label>
-              Discount %
+              Type
+              <select
+                value={form.type}
+                onChange={(event) => setForm({ ...form, type: event.target.value })}
+              >
+                <option value="PERCENT">PERCENT</option>
+                <option value="FIXED">FIXED</option>
+              </select>
+            </label>
+            <label>
+              Value
               <input
                 type="number"
-                value={form.discount_percent}
+                value={form.value}
                 onChange={(event) =>
-                  setForm({ ...form, discount_percent: event.target.value })
+                  setForm({ ...form, value: event.target.value })
                 }
               />
             </label>

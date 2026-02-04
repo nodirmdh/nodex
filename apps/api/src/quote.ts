@@ -16,6 +16,16 @@ export type QuotePayload = {
   delivery_location?: { lat: number; lng: number };
   delivery_comment?: string | null;
   vendor_comment?: string | null;
+  utensils_count?: number | null;
+  napkins_count?: number | null;
+  receiver_phone?: string | null;
+  payment_method?: string | null;
+  change_for_amount?: number | null;
+  address_text?: string | null;
+  address_street?: string | null;
+  address_house?: string | null;
+  address_entrance?: string | null;
+  address_apartment?: string | null;
   promo_code?: string | null;
   items?: { menu_item_id: string; quantity: number }[];
 };

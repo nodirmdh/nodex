@@ -30,6 +30,7 @@ const buildContext = (): QuoteContext => {
       promoType: PromotionType.PERCENT,
       itemIds: ["item-1"],
       valueNumeric: 10,
+      priority: 0,
       isActive: true,
     },
     {
@@ -37,6 +38,7 @@ const buildContext = (): QuoteContext => {
       promoType: PromotionType.FIXED_PRICE,
       itemIds: ["item-2"],
       valueNumeric: 5000,
+      priority: 0,
       isActive: true,
     },
   ];
@@ -74,6 +76,18 @@ describe("quoteCart", () => {
     const result = quoteCart(deliveryPayload(latDeltaForKm(2.01)), context);
 
     expect(result.delivery_fee).toBe(6000);
+  });
+
+  it("rejects delivery locations that are too far", () => {
+    const context = buildContext();
+
+    try {
+      quoteCart(deliveryPayload(latDeltaForKm(60)), context);
+      throw new Error("Expected QuoteValidationError");
+    } catch (error) {
+      expect(error).toBeInstanceOf(QuoteValidationError);
+      expect((error as QuoteValidationError).code).toBe("DELIVERY_TOO_FAR");
+    }
   });
 
   it("sets pickup delivery fee to zero", () => {
@@ -190,6 +204,7 @@ describe("quoteCart", () => {
         promoType: PromotionType.PERCENT,
         itemIds: ["item-1"],
         valueNumeric: 50,
+        priority: 0,
         isActive: true,
       },
       {
@@ -197,6 +212,7 @@ describe("quoteCart", () => {
         promoType: PromotionType.FIXED_PRICE,
         itemIds: ["item-1"],
         valueNumeric: 7000,
+        priority: 0,
         isActive: true,
       },
     ];

@@ -1,6 +1,7 @@
 export const SERVICE_FEE_AMOUNT = 3000;
 export const DELIVERY_BASE_FEE = 3000;
 export const DELIVERY_PER_KM_FEE = 1000;
+export const MAX_DELIVERY_DISTANCE_KM = 50;
 
 export enum FulfillmentType {
   DELIVERY = "DELIVERY",
@@ -50,6 +51,7 @@ type BasePromotion = {
   promotionId: string;
   promoType: PromotionType;
   isActive: boolean;
+  priority: number;
 };
 
 export type FixedPercentPromotion = BasePromotion & {
@@ -113,6 +115,12 @@ export type QuoteResult = {
 
 export class QuoteValidationError extends Error {
   statusCode = 400;
+  code?: string;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.code = code;
+  }
 }
 
 export type QuoteContext = {
@@ -168,7 +176,16 @@ export function calculateDeliveryFee(
   if (!deliveryLocation) {
     throw new QuoteValidationError("delivery_location is required for delivery orders");
   }
+  if (!Number.isFinite(vendorGeo.lat) || !Number.isFinite(vendorGeo.lng)) {
+    throw new QuoteValidationError("vendor geo is missing");
+  }
+  if (!Number.isFinite(deliveryLocation.lat) || !Number.isFinite(deliveryLocation.lng)) {
+    throw new QuoteValidationError("delivery_location is required for delivery orders");
+  }
   const distanceKm = haversineKm(vendorGeo, deliveryLocation);
+  if (!Number.isFinite(distanceKm) || distanceKm > MAX_DELIVERY_DISTANCE_KM) {
+    throw new QuoteValidationError("delivery location is too far", "DELIVERY_TOO_FAR");
+  }
   return DELIVERY_BASE_FEE + Math.ceil(distanceKm) * DELIVERY_PER_KM_FEE;
 }
 
@@ -243,20 +260,20 @@ function calculateDiscounts(
 
   const comboPromos = promotions.filter(
     (promo): promo is ComboPromotion => promo.promoType === PromotionType.COMBO && promo.isActive,
-  );
+  ).sort((a, b) => b.priority - a.priority || a.promotionId.localeCompare(b.promotionId));
   const buyxgetyPromos = promotions.filter(
     (promo): promo is BuyXGetYPromotion =>
       promo.promoType === PromotionType.BUY_X_GET_Y && promo.isActive,
-  );
+  ).sort((a, b) => b.priority - a.priority || a.promotionId.localeCompare(b.promotionId));
   const fixedPercentPromos = promotions.filter(
     (promo): promo is FixedPercentPromotion =>
       (promo.promoType === PromotionType.FIXED_PRICE ||
         promo.promoType === PromotionType.PERCENT) &&
       promo.isActive,
-  );
+  ).sort((a, b) => b.priority - a.priority || a.promotionId.localeCompare(b.promotionId));
   const giftPromos = promotions.filter(
     (promo): promo is GiftPromotion => promo.promoType === PromotionType.GIFT && promo.isActive,
-  );
+  ).sort((a, b) => b.priority - a.priority || a.promotionId.localeCompare(b.promotionId));
 
   for (const combo of comboPromos) {
     if (combo.comboItems.length === 0) {

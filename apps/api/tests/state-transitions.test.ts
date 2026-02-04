@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { FulfillmentType } from "../src/pricing";
-import { OrderStatus, assertTransition } from "../src/orderState";
+import { OrderStatus, assertTransition, canTransition } from "../src/orderState";
 
 describe("order state transitions", () => {
   it("allows vendor preparation flow transitions", () => {
@@ -58,5 +58,14 @@ describe("order state transitions", () => {
     expect(() =>
       assertTransition(OrderStatus.NEW, OrderStatus.COOKING, "VENDOR", FulfillmentType.PICKUP),
     ).toThrow();
+  });
+
+  it("allows admin patch only for valid transitions", () => {
+    expect(canTransition(OrderStatus.NEW, OrderStatus.ACCEPTED, FulfillmentType.DELIVERY)).toBe(
+      true,
+    );
+    expect(canTransition(OrderStatus.NEW, OrderStatus.DELIVERED, FulfillmentType.DELIVERY)).toBe(
+      false,
+    );
   });
 });

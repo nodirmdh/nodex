@@ -2,7 +2,7 @@
 
 ## Glossary
 - **Vendorka**: Vendor cabinet (Telegram Mini App) for a single physical vendor point.
-- **Vendor**: Single physical point (no outlets) with one `address_text` and geo (lat/lng).
+- **Vendor**: Single physical point (no outlets) with `name`, `address_text`, geo (lat/lng), optional `phone`, `inn`, `opening_hours`, `payout_details`, and `is_active`.
 - **Promotion**: Discount rule (item-level or order-level) that does not stack on the same item units.
 - **Promo code**: Admin-managed discount code saved by client in profile.
 

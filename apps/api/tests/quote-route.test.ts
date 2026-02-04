@@ -32,6 +32,7 @@ class InMemoryQuoteRepository implements QuoteContextRepository {
         promoType: PromotionType.PERCENT,
         itemIds: ["item-1"],
         valueNumeric: 10,
+        priority: 0,
         isActive: true,
       },
     ];
@@ -68,6 +69,10 @@ describe("POST /client/cart/quote", () => {
       const response = await app.inject({
         method: "POST",
         url: "/client/cart/quote",
+        headers: {
+          "x-role": "CLIENT",
+          "x-client-id": "test-client",
+        },
         payload: {
           vendor_id: "vendor-1",
           fulfillment_type: FulfillmentType.DELIVERY,

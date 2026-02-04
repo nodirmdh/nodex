@@ -32,6 +32,7 @@ it("applies combo before percent promotions", () => {
         { itemId: "item-b", quantity: 1 },
       ],
       valueNumeric: 12000,
+      priority: 0,
       isActive: true,
     },
     {
@@ -39,6 +40,7 @@ it("applies combo before percent promotions", () => {
       promoType: PromotionType.PERCENT,
       itemIds: ["item-a"],
       valueNumeric: 10,
+      priority: 0,
       isActive: true,
     },
   ];
@@ -75,6 +77,7 @@ it("applies buy-x-get-y before fixed/percent", () => {
       getItemId: "item-b",
       getQuantity: 1,
       discountPercent: 100,
+      priority: 0,
       isActive: true,
     },
     {
@@ -82,6 +85,7 @@ it("applies buy-x-get-y before fixed/percent", () => {
       promoType: PromotionType.PERCENT,
       itemIds: ["item-b"],
       valueNumeric: 10,
+      priority: 0,
       isActive: true,
     },
   ];
@@ -120,6 +124,7 @@ it("applies gift promotions after discounts", () => {
       giftItemId: "item-gift",
       giftQuantity: 1,
       minOrderAmount: 8000,
+      priority: 0,
       isActive: true,
     },
   ];

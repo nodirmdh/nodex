@@ -32,6 +32,12 @@ enum FulfillmentType {
   PICKUP
 }
 
+enum AddressType {
+  HOME
+  WORK
+  OTHER
+}
+
 enum OrderStatus {
   NEW
   ACCEPTED
@@ -46,16 +52,38 @@ enum OrderStatus {
   CANCELLED_BY_VENDOR
 }
 
+enum DeliveryMethod {
+  WALK
+  BIKE
+  MOTO
+  CAR
+}
+
 model Vendor {
   id             String         @id @default(uuid())
+  name           String
+  description    String?
+  phone          String?
+  ownerFullName  String?
+  phone1         String?
+  phone2         String?
+  phone3         String?
+  email          String?
+  inn            String?
   category       VendorCategory
   supportsPickup Boolean        @default(false)
   addressText    String?
+  isActive       Boolean        @default(true)
+  openingHours   String?
+  payoutDetails  Json?
   geoLat         Float
   geoLng         Float
+  ratingAvg      Float          @default(0)
+  ratingCount    Int            @default(0)
   menuItems      MenuItem[]
   promotions     Promotion[]
   orders         Order[]
+  ratings        Rating[]
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 }
@@ -64,8 +92,14 @@ model MenuItem {
   id            String          @id @default(uuid())
   vendorId      String
   vendor        Vendor          @relation(fields: [vendorId], references: [id])
+  title         String
+  description   String?
+  weightValue   Int?
+  weightUnit    String?
   price         Int
   isAvailable   Boolean         @default(true)
+  category      String?
+  imageUrl      String?
   promotionItems PromotionItem[]
   comboItems    PromotionComboItem[]
   buyXItems     PromotionBuyXGetY[] @relation("BuyItem")
@@ -82,6 +116,7 @@ model Promotion {
   vendor        Vendor          @relation(fields: [vendorId], references: [id])
   promoType     PromotionType
   valueNumeric  Int
+  priority      Int             @default(0)
   isActive      Boolean         @default(true)
   promotionItems PromotionItem[]
   comboItems    PromotionComboItem[]
@@ -149,6 +184,16 @@ model Order {
   deliveryLng     Float?
   deliveryComment String?
   vendorComment   String?
+  utensilsCount   Int             @default(0)
+  napkinsCount    Int             @default(0)
+  receiverPhone   String?
+  paymentMethod   String?
+  changeForAmount Int?
+  addressText     String?
+  addressStreet   String?
+  addressHouse    String?
+  addressEntrance String?
+  addressApartment String?
   itemsSubtotal   Int
   discountTotal   Int
   promoCodeId     String?
@@ -163,8 +208,8 @@ model Order {
   comboCount      Int
   buyxgetyCount   Int
   giftCount       Int
-  pickupCodeHash  String
-  pickupCodeSalt  String
+  pickupCodeHash  String?
+  pickupCodeSalt  String?
   deliveryCodeHash String
   deliveryCodeSalt String
   createdAt       DateTime        @default(now())
@@ -172,6 +217,36 @@ model Order {
   items           OrderItem[]
   events          DomainEvent[]
   tracking        OrderTracking[]
+  promoRedemptions PromoCodeRedemption[]
+  rating          Rating?
+}
+
+model Client {
+  id        String   @id
+  fullName  String?
+  phone     String?
+  telegramUsername String?
+  about     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  promoRedemptions PromoCodeRedemption[]
+  addresses Address[]
+}
+
+model Courier {
+  id          String   @id
+  fullName    String?
+  phone       String?
+  telegramUsername String?
+  photoUrl    String?
+  deliveryMethod DeliveryMethod?
+  isAvailable Boolean  @default(true)
+  maxActiveOrders Int  @default(1)
+  ratingAvg   Float    @default(0)
+  ratingCount Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  ratings     Rating[]
 }
 
 model OrderItem {
@@ -210,6 +285,7 @@ model PromoCode {
   updatedAt   DateTime     @updatedAt
   orders      Order[]
   clientCodes ClientPromoCode[]
+  redemptions PromoCodeRedemption[]
 }
 
 model ClientPromoCode {
@@ -220,6 +296,49 @@ model ClientPromoCode {
   createdAt   DateTime  @default(now())
 
   @@unique([clientId, promoCodeId])
+}
+
+model PromoCodeRedemption {
+  id          String    @id @default(uuid())
+  promoCodeId String
+  clientId    String
+  orderId     String?
+  redeemedAt  DateTime  @default(now())
+  promoCode   PromoCode @relation(fields: [promoCodeId], references: [id])
+  client      Client    @relation(fields: [clientId], references: [id])
+  order       Order?    @relation(fields: [orderId], references: [id])
+
+  @@unique([promoCodeId, clientId])
+}
+
+model Address {
+  id          String      @id @default(uuid())
+  clientId    String
+  type        AddressType
+  addressText String
+  lat         Float
+  lng         Float
+  entrance    String?
+  apartment   String?
+  createdAt   DateTime    @default(now())
+
+  client Client @relation(fields: [clientId], references: [id])
+}
+
+model Rating {
+  id             String   @id @default(uuid())
+  orderId        String   @unique
+  vendorId       String
+  courierId      String?
+  vendorStars    Int
+  vendorComment  String?
+  courierStars   Int?
+  courierComment String?
+  createdAt      DateTime @default(now())
+
+  order   Order   @relation(fields: [orderId], references: [id])
+  vendor  Vendor  @relation(fields: [vendorId], references: [id])
+  courier Courier? @relation(fields: [courierId], references: [id])
 }
 
 model OrderTracking {

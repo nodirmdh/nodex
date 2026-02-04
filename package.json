@@ -10,9 +10,15 @@
   "scripts": {
     "dev:api": "npm -w apps/api run dev",
     "dev:admin": "npm -w apps/admin-web run dev",
-    "test": "npm -w apps/api test",
-    "test:integration": "RUN_INTEGRATION=1 npm -w apps/api test",
-    "build": "npm -w apps/api run build && npm -w apps/admin-web run build",
-    "typecheck": "npm -w apps/api run typecheck && npm -w apps/admin-web run typecheck"
+    "dev:client": "npm -w apps/client-miniapp run dev",
+    "dev:courier": "npm -w apps/courier-miniapp run dev",
+    "dev:vendor": "npm -w apps/vendor-web run dev",
+    "test": "npm -ws run test --if-present",
+    "seed": "npm -w apps/api run seed",
+    "test:unit": "npm -w apps/api run test:unit",
+    "test:int": "npm -w apps/api run test:int",
+    "lint": "npm -ws run lint",
+    "typecheck": "npm -ws run typecheck",
+    "build": "npm -ws run build"
   }
 }

@@ -21,3 +21,14 @@ export function verifyCode(code: string, hash: string, salt: string): boolean {
   const computed = crypto.scryptSync(code, salt, 64).toString("hex");
   return crypto.timingSafeEqual(Buffer.from(computed, "hex"), Buffer.from(hash, "hex"));
 }
+
+export function normalizeNumericCode(input: string, length = 4): string | null {
+  const digits = input.trim().replace(/\D/g, "");
+  if (!digits) {
+    return null;
+  }
+  if (digits.length >= length) {
+    return digits;
+  }
+  return digits.padStart(length, "0");
+}
