@@ -20,14 +20,14 @@ describe("order state transitions", () => {
     expect(() =>
       assertTransition(
         OrderStatus.READY,
-        OrderStatus.COURIER_ACCEPTED,
+        OrderStatus.HANDOFF_CONFIRMED,
         "COURIER",
         FulfillmentType.DELIVERY,
       ),
     ).not.toThrow();
     expect(() =>
       assertTransition(
-        OrderStatus.COURIER_ACCEPTED,
+        OrderStatus.HANDOFF_CONFIRMED,
         OrderStatus.PICKED_UP,
         "COURIER",
         FulfillmentType.DELIVERY,
@@ -47,11 +47,30 @@ describe("order state transitions", () => {
     expect(() =>
       assertTransition(
         OrderStatus.READY,
-        OrderStatus.COURIER_ACCEPTED,
+        OrderStatus.HANDOFF_CONFIRMED,
         "COURIER",
         FulfillmentType.PICKUP,
       ),
     ).toThrow();
+  });
+
+  it("allows pickup completion without courier", () => {
+    expect(() =>
+      assertTransition(
+        OrderStatus.READY,
+        OrderStatus.HANDOFF_CONFIRMED,
+        "VENDOR",
+        FulfillmentType.PICKUP,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertTransition(
+        OrderStatus.HANDOFF_CONFIRMED,
+        OrderStatus.COMPLETED,
+        "VENDOR",
+        FulfillmentType.PICKUP,
+      ),
+    ).not.toThrow();
   });
 
   it("rejects invalid transitions", () => {
@@ -64,7 +83,7 @@ describe("order state transitions", () => {
     expect(canTransition(OrderStatus.NEW, OrderStatus.ACCEPTED, FulfillmentType.DELIVERY)).toBe(
       true,
     );
-    expect(canTransition(OrderStatus.NEW, OrderStatus.DELIVERED, FulfillmentType.DELIVERY)).toBe(
+    expect(canTransition(OrderStatus.NEW, OrderStatus.COMPLETED, FulfillmentType.DELIVERY)).toBe(
       false,
     );
   });

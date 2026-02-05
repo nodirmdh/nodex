@@ -1,5 +1,12 @@
 import Fastify, { FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
+import fastifyStatic from "@fastify/static";
+import path from "path";
+import fs from "fs/promises";
+import { createWriteStream } from "fs";
+import { pipeline } from "stream/promises";
+import crypto from "crypto";
 
 import { QuoteNotFoundError, QuotePayload, buildQuoteRequest, quoteCart } from "./quote";
 import {
@@ -23,6 +30,8 @@ import {
   signAdminToken,
   validateAdminCredentials,
 } from "./adminAuth";
+import { getAuthFromHeaders, signAuthToken } from "./auth";
+import { hashPassword, verifyPassword } from "./auth/password";
 import { normalizeUzPhone } from "./phone";
 import {
   PromoAlreadyUsedError,
@@ -44,6 +53,7 @@ import {
   isPromotionActiveNow,
 } from "./promotionVisibility";
 import { computeCourierBalance, mapCourierHistoryOrder } from "./courierAggregates";
+import { computeVendorScheduleInfo, VendorScheduleEntry } from "./vendorSchedule";
 
 type BuildServerOptions = {
   quoteContextBuilder?: (
@@ -52,6 +62,7 @@ type BuildServerOptions = {
     promoCode?: string | null,
   ) => Promise<QuoteContext>;
   repository?: QuoteContextRepository;
+  prisma?: PrismaClient;
 };
 
 type Role = "ADMIN" | "CLIENT" | "COURIER" | "VENDOR";
@@ -62,11 +73,13 @@ const DEV_MODE =
   process.env.NODE_ENV === "test";
 const DEV_CLIENT_ID = process.env.DEV_CLIENT_ID ?? "dev-client-1";
 const DEV_COURIER_ID = process.env.DEV_COURIER_ID ?? "dev-courier-1";
+const DEV_VENDOR_ID = process.env.DEV_VENDOR_ID ?? "dev-vendor-1";
 const DEV_USER_HEADER = "x-dev-user";
 
 export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   const app = Fastify({ logger: false });
-  const prisma = options.repository ? null : new PrismaClient();
+  const prisma = options.prisma ?? (options.repository ? null : new PrismaClient());
+  const shouldDisconnect = !options.prisma;
   const quoteRepository =
     options.repository ?? new PrismaQuoteRepository(prisma as PrismaClient);
   const quoteContextBuilder =
@@ -78,6 +91,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     windowMs: 5 * 60 * 1000,
     maxAttempts: 5,
   });
+
+  const uploadsDir = path.resolve(process.cwd(), "uploads");
+  void fs.mkdir(uploadsDir, { recursive: true });
 
   void app.register(cors, {
     origin: true,
@@ -93,6 +109,69 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       "x-telegram-init-data",
       "x-dev-user",
     ],
+  });
+
+  void app.register(multipart);
+  void app.register(fastifyStatic, {
+    root: uploadsDir,
+    prefix: "/uploads/",
+  });
+
+  app.addHook("preHandler", async (request, reply) => {
+    if (!prisma) {
+      return;
+    }
+    if (!request.url.startsWith("/vendor/") || request.url.startsWith("/vendor/auth/")) {
+      return;
+    }
+    const role = readRole(request);
+    if (role !== "VENDOR") {
+      return;
+    }
+    const vendorId = resolveVendorId(request, role);
+    if (!vendorId) {
+      return reply.status(400).send({ message: "x-vendor-id is required" });
+    }
+    const vendor = await (prisma as PrismaClient).vendor.findUnique({
+      where: { id: vendorId },
+      select: { isBlocked: true },
+    });
+    if (!vendor) {
+      return reply.status(404).send({ message: "vendor not found" });
+    }
+    if (vendor.isBlocked) {
+      return reply.status(403).send({ message: "vendor is blocked", code: "VENDOR_BLOCKED" });
+    }
+  });
+
+  app.addHook("preHandler", async (request, reply) => {
+    if (!prisma) {
+      return;
+    }
+    if (!request.url.startsWith("/courier/") || request.url.startsWith("/courier/auth/")) {
+      return;
+    }
+    const role = readRole(request);
+    if (!DEV_MODE && role !== "COURIER" && role !== "ADMIN") {
+      return reply.status(403).send({ message: "Forbidden" });
+    }
+    if (role !== "COURIER") {
+      return;
+    }
+    const courierId = resolveCourierId(request, role);
+    if (!courierId) {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+    const courier = await (prisma as PrismaClient).courier.findUnique({
+      where: { id: courierId },
+      select: { isBlocked: true },
+    });
+    if (!courier) {
+      return reply.status(404).send({ message: "courier not found" });
+    }
+    if (courier.isBlocked) {
+      return reply.status(403).send({ message: "courier is blocked", code: "COURIER_BLOCKED" });
+    }
   });
 
   app.post("/client/cart/quote", async (request, reply) => {
@@ -124,6 +203,32 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const promoCode = normalizePromoCode(
       typeof payload.promo_code === "string" ? payload.promo_code : null,
     );
+    if (prisma) {
+      const vendor = await (prisma as PrismaClient).vendor.findUnique({
+        where: { id: vendorId },
+        include: { schedules: true },
+      });
+      if (!vendor) {
+        return reply.status(400).send({ message: "vendor not found" });
+      }
+      if (vendor.isBlocked) {
+        return reply.status(403).send({ message: "vendor is blocked", code: "VENDOR_BLOCKED" });
+      }
+      if (!vendor.isActive) {
+        return reply
+          .status(400)
+          .send({ message: "vendor is inactive", code: "VENDOR_INACTIVE" });
+      }
+      const scheduleInfo = computeVendorOpenState(
+        vendor.schedules.map(mapScheduleEntry),
+        vendor.timezone ?? "Asia/Tashkent",
+      );
+      if (!scheduleInfo.isOpenNow) {
+        return reply
+          .status(400)
+          .send({ message: "vendor is closed", code: "VENDOR_CLOSED" });
+      }
+    }
     const context = await quoteContextBuilder(vendorId, menuItemIds, promoCode);
     if (promoCode && context.promoCode && clientId && prisma) {
       const redeemed = await (prisma as PrismaClient).promoCodeRedemption.findUnique({
@@ -196,6 +301,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         orderBy: { createdAt: "desc" },
         include: {
           promotions: { where: { isActive: true } },
+          schedules: true,
         },
       }),
       (prisma as PrismaClient).promoCode.findFirst({
@@ -212,22 +318,35 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const promoCodeAvailable = Boolean(activePromoCode);
 
     return reply.send({
-      vendors: vendors.map((vendor) => ({
-        vendor_id: vendor.id,
-        category: vendor.category,
-        supports_pickup: vendor.supportsPickup,
-        address_text: vendor.addressText,
-        geo: { lat: vendor.geoLat, lng: vendor.geoLng },
-        name: vendor.name ?? vendor.addressText ?? `Vendor ${vendor.id.slice(0, 6)}`,
-        description: vendor.description ?? null,
-        rating_avg: vendor.ratingAvg ?? 0,
-        rating_count: vendor.ratingCount ?? 0,
-        active_promotions: buildActivePromotionBadges(
-          vendor.promotions,
-          promoCodeAvailable,
-          now,
-        ),
-      })),
+      vendors: vendors.map((vendor) => {
+        const scheduleInfo = computeVendorOpenState(
+          vendor.schedules.map(mapScheduleEntry),
+          vendor.timezone ?? "Asia/Tashkent",
+        );
+        return {
+          vendor_id: vendor.id,
+          category: vendor.category,
+          supports_pickup: vendor.supportsPickup,
+          address_text: vendor.addressText,
+          geo: { lat: vendor.geoLat, lng: vendor.geoLng },
+          name: vendor.name ?? vendor.addressText ?? `Vendor ${vendor.id.slice(0, 6)}`,
+          description: vendor.description ?? null,
+          main_image_url: vendor.mainImageUrl ?? null,
+          gallery_images: vendor.galleryImages ?? [],
+          is_active: vendor.isActive,
+          is_blocked: vendor.isBlocked,
+          delivers_self: vendor.deliversSelf,
+          rating_avg: vendor.ratingAvg ?? 0,
+          rating_count: vendor.ratingCount ?? 0,
+          active_promotions: buildActivePromotionBadges(
+            vendor.promotions,
+            promoCodeAvailable,
+            now,
+          ),
+          is_open_now: scheduleInfo.isOpenNow,
+          next_open_at: scheduleInfo.nextOpenAt,
+        };
+      }),
     });
   });
 
@@ -256,6 +375,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
             gift: true,
           },
         },
+        schedules: true,
       },
     });
 
@@ -299,21 +419,34 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         description: item.description,
         weight_value: item.weightValue,
         weight_unit: item.weightUnit,
+        image_url: item.imageUrl ?? null,
         promo_badges: Array.from(promoBadges),
       };
     });
+
+    const scheduleInfo = computeVendorOpenState(
+      vendor.schedules.map(mapScheduleEntry),
+      vendor.timezone ?? "Asia/Tashkent",
+    );
 
     return reply.send({
       vendor_id: vendor.id,
       category: vendor.category,
       supports_pickup: vendor.supportsPickup,
+      delivers_self: vendor.deliversSelf,
       address_text: vendor.addressText,
       geo: { lat: vendor.geoLat, lng: vendor.geoLng },
       name: vendor.name ?? vendor.addressText ?? `Vendor ${vendor.id.slice(0, 6)}`,
       description: vendor.description ?? null,
+      main_image_url: vendor.mainImageUrl ?? null,
+      gallery_images: vendor.galleryImages ?? [],
+      is_active: vendor.isActive,
+      is_blocked: vendor.isBlocked,
       rating_avg: vendor.ratingAvg ?? 0,
       rating_count: vendor.ratingCount ?? 0,
       active_promotions: buildActivePromotionBadges(activePromos, promoCodeAvailable, now),
+      is_open_now: scheduleInfo.isOpenNow,
+      next_open_at: scheduleInfo.nextOpenAt,
       menu,
     });
   });
@@ -335,6 +468,196 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       request.log.error({ err: error }, "Admin auth failed");
       return reply.status(500).send({ message: "Internal Server Error" });
     }
+  });
+
+  app.post("/vendor/auth/login", async (request, reply) => {
+    const payload = request.body as { login?: string; password?: string };
+    if (!payload.login || !payload.password) {
+      return reply.status(400).send({ message: "login and password are required" });
+    }
+
+    const vendor = await (prisma as PrismaClient).vendor.findFirst({
+      where: { login: payload.login },
+    });
+    if (!vendor || !vendor.passwordHash) {
+      return reply.status(401).send({ message: "invalid credentials" });
+    }
+    if (vendor.isBlocked) {
+      return reply.status(403).send({ message: "vendor is blocked", code: "VENDOR_BLOCKED" });
+    }
+    const isValid = await verifyPassword(payload.password, vendor.passwordHash);
+    if (!isValid) {
+      return reply.status(401).send({ message: "invalid credentials" });
+    }
+
+    const token = signAuthToken({
+      sub: vendor.id,
+      role: "VENDOR",
+      vendorId: vendor.id,
+    });
+
+    return reply.send({ token, vendor_id: vendor.id, is_active: vendor.isActive });
+  });
+
+  app.post("/courier/auth/login", async (request, reply) => {
+    const payload = request.body as { login?: string; phone?: string; password?: string };
+    if (!payload.password || (!payload.login && !payload.phone)) {
+      return reply.status(400).send({ message: "login/phone and password are required" });
+    }
+
+    const normalizedPhone = payload.phone ? normalizeUzPhone(payload.phone) : null;
+    const courier = await (prisma as PrismaClient).courier.findFirst({
+      where: payload.login
+        ? { login: payload.login }
+        : normalizedPhone
+          ? { phone: normalizedPhone }
+          : { phone: payload.phone },
+    });
+    if (!courier || !courier.passwordHash) {
+      return reply.status(401).send({ message: "invalid credentials" });
+    }
+    if (courier.isBlocked) {
+      return reply.status(403).send({ message: "courier is blocked", code: "COURIER_BLOCKED" });
+    }
+    const isValid = await verifyPassword(payload.password, courier.passwordHash);
+    if (!isValid) {
+      return reply.status(401).send({ message: "invalid credentials" });
+    }
+
+    const token = signAuthToken({
+      sub: courier.id,
+      role: "COURIER",
+      courierId: courier.id,
+    });
+
+    return reply.send({
+      token,
+      courier_id: courier.id,
+      full_name: courier.fullName ?? null,
+      phone: courier.phone ?? null,
+    });
+  });
+
+  app.post("/client/auth/register", async (request, reply) => {
+    const payload = request.body as {
+      full_name?: string;
+      birth_date?: string;
+      phone?: string;
+      password?: string;
+    };
+    if (!payload.full_name || !payload.birth_date || !payload.phone || !payload.password) {
+      return reply.status(400).send({ message: "full_name, birth_date, phone, password are required" });
+    }
+    const normalizedPhone = normalizeUzPhone(payload.phone);
+    if (!normalizedPhone) {
+      return reply.status(400).send({ message: "phone must start with +998", code: "INVALID_PHONE" });
+    }
+    const birthDate = new Date(payload.birth_date);
+    if (Number.isNaN(birthDate.getTime())) {
+      return reply.status(400).send({ message: "birth_date is invalid" });
+    }
+    const existing = await (prisma as PrismaClient).client.findFirst({
+      where: { phone: normalizedPhone },
+    });
+    if (existing) {
+      return reply.status(409).send({ message: "phone already registered", code: "PHONE_EXISTS" });
+    }
+    const passwordHash = await hashPassword(payload.password);
+    const client = await (prisma as PrismaClient).client.create({
+      data: {
+        id: crypto.randomUUID(),
+        fullName: payload.full_name,
+        birthDate,
+        phone: normalizedPhone,
+        passwordHash,
+      },
+    });
+    const token = signAuthToken({
+      sub: client.id,
+      role: "CLIENT",
+      clientId: client.id,
+    });
+    return reply.status(201).send({
+      token,
+      client_id: client.id,
+      full_name: client.fullName,
+      phone: client.phone,
+    });
+  });
+
+  app.post("/client/auth/login", async (request, reply) => {
+    const payload = request.body as { phone?: string; password?: string };
+    if (!payload.phone || !payload.password) {
+      return reply.status(400).send({ message: "phone and password are required" });
+    }
+    const normalizedPhone = normalizeUzPhone(payload.phone);
+    if (!normalizedPhone) {
+      return reply.status(400).send({ message: "phone must start with +998", code: "INVALID_PHONE" });
+    }
+    const client = await (prisma as PrismaClient).client.findFirst({
+      where: { phone: normalizedPhone },
+    });
+    if (!client || !client.passwordHash) {
+      return reply.status(401).send({ message: "invalid credentials" });
+    }
+    const isValid = await verifyPassword(payload.password, client.passwordHash);
+    if (!isValid) {
+      return reply.status(401).send({ message: "invalid credentials" });
+    }
+    const token = signAuthToken({
+      sub: client.id,
+      role: "CLIENT",
+      clientId: client.id,
+    });
+    return reply.send({
+      token,
+      client_id: client.id,
+      full_name: client.fullName,
+      phone: client.phone,
+    });
+  });
+
+  app.post("/client/auth/telegram", async (request, reply) => {
+    const initData = readHeader(request, "x-telegram-init-data");
+    const tgId = parseTelegramUserId(initData);
+    if (!tgId) {
+      return reply.status(401).send({ message: "telegram initData is required" });
+    }
+
+    const client = await (prisma as PrismaClient).client.upsert({
+      where: { id: tgId },
+      update: {},
+      create: { id: tgId },
+    });
+
+    const token = signAuthToken({
+      sub: client.id,
+      role: "CLIENT",
+      clientId: client.id,
+    });
+    return reply.send({ token, client_id: client.id });
+  });
+
+  app.post("/files/upload", async (request, reply) => {
+    const role = readRole(request);
+    if (!role) {
+      return reply.status(403).send({ message: "Forbidden" });
+    }
+    const file = await request.file();
+    if (!file) {
+      return reply.status(400).send({ message: "file is required" });
+    }
+    const ext = path.extname(file.filename || "");
+    const fileId = crypto.randomUUID();
+    const fileName = `${fileId}${ext}`;
+    const targetPath = path.join(uploadsDir, fileName);
+
+    await pipeline(file.file, createWriteStream(targetPath));
+
+    return reply.send({
+      file_id: fileId,
+      public_url: `/uploads/${fileName}`,
+    });
   });
 
   app.post("/client/orders", async (request, reply) => {
@@ -367,6 +690,32 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const promoCode = normalizePromoCode(
       typeof payload.promo_code === "string" ? payload.promo_code : null,
     );
+    if (prisma) {
+      const vendor = await (prisma as PrismaClient).vendor.findUnique({
+        where: { id: vendorId },
+        include: { schedules: true },
+      });
+      if (!vendor) {
+        return reply.status(400).send({ message: "vendor not found" });
+      }
+      if (vendor.isBlocked) {
+        return reply.status(403).send({ message: "vendor is blocked", code: "VENDOR_BLOCKED" });
+      }
+      if (!vendor.isActive) {
+        return reply
+          .status(400)
+          .send({ message: "vendor is inactive", code: "VENDOR_INACTIVE" });
+      }
+      const scheduleInfo = computeVendorOpenState(
+        vendor.schedules.map(mapScheduleEntry),
+        vendor.timezone ?? "Asia/Tashkent",
+      );
+      if (!scheduleInfo.isOpenNow) {
+        return reply
+          .status(400)
+          .send({ message: "vendor is closed", code: "VENDOR_CLOSED" });
+      }
+    }
     const context = await quoteContextBuilder(vendorId, menuItemIds, promoCode);
 
     try {
@@ -394,8 +743,18 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       }
       const snapshot = buildOrderSnapshot(quote);
 
-      const deliveryCode = generateNumericCode();
-      const deliveryHash = hashCode(deliveryCode);
+      let deliveryCode: string | null = null;
+      let deliveryHash: { hash: string; salt: string } | null = null;
+      let pickupCode: string | null = null;
+      let pickupHash: { hash: string; salt: string } | null = null;
+
+      if (quoteRequest.fulfillmentType === FulfillmentType.DELIVERY) {
+        deliveryCode = generateNumericCode();
+        deliveryHash = hashCode(deliveryCode);
+      } else {
+        pickupCode = generateNumericCode();
+        pickupHash = hashCode(pickupCode);
+      }
 
       const order = await (prisma as PrismaClient).$transaction(async (tx) => {
         if (clientId) {
@@ -456,8 +815,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
             comboCount: snapshot.comboCount,
             buyxgetyCount: snapshot.buyxgetyCount,
             giftCount: snapshot.giftCount,
-            deliveryCodeHash: deliveryHash.hash,
-            deliveryCodeSalt: deliveryHash.salt,
+            pickupCodeHash: pickupHash?.hash ?? null,
+            pickupCodeSalt: pickupHash?.salt ?? null,
+            deliveryCodeHash: deliveryHash?.hash ?? null,
+            deliveryCodeSalt: deliveryHash?.salt ?? null,
             items: {
               create: quote.lineItems.map((item) => ({
                 menuItemId: item.menuItemId,
@@ -494,17 +855,17 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           status: order.status,
           items_subtotal: order.itemsSubtotal,
           discount_total: order.discountTotal,
-        promo_code: quote.promoCode,
-        promo_code_discount: quote.promoCodeDiscount,
-        service_fee: order.serviceFee,
-        delivery_fee: order.deliveryFee,
-        total: order.total,
-        promo_items_count: order.promoItemsCount,
-        combo_count: order.comboCount,
-        buyxgety_count: order.buyxgetyCount,
-        gift_count: order.giftCount,
-          delivery_code:
-            quoteRequest.fulfillmentType === FulfillmentType.DELIVERY ? deliveryCode : null,
+          promo_code: quote.promoCode,
+          promo_code_discount: quote.promoCodeDiscount,
+          service_fee: order.serviceFee,
+          delivery_fee: order.deliveryFee,
+          total: order.total,
+          promo_items_count: order.promoItemsCount,
+          combo_count: order.comboCount,
+          buyxgety_count: order.buyxgetyCount,
+          gift_count: order.giftCount,
+          delivery_code: deliveryCode,
+          pickup_code: pickupCode,
         };
 
         return reply.status(201).send(response);
@@ -553,7 +914,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       },
       orderBy: { createdAt: "desc" },
       take,
-      include: { vendor: true },
+      include: { vendor: true, courier: { select: { id: true, fullName: true } } },
     });
 
     const nextCursor = orders.length > 0 ? orders[orders.length - 1].createdAt : null;
@@ -566,6 +927,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         status: order.status,
         total: order.total,
         fulfillment_type: order.fulfillmentType,
+        courier:
+          order.courierId
+            ? { id: order.courierId, full_name: order.courier?.fullName ?? null }
+            : null,
         created_at: order.createdAt,
       })),
       next_cursor: nextCursor,
@@ -590,6 +955,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         items: { include: { menuItem: true } },
         promoCode: true,
         vendor: true,
+        courier: { select: { id: true, fullName: true } },
         rating: true,
       },
     });
@@ -614,6 +980,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       vendor_id: order.vendorId,
       vendor_name: order.vendor.name ?? `Vendor ${order.vendorId.slice(0, 6)}`,
       vendor_geo: { lat: order.vendor.geoLat, lng: order.vendor.geoLng },
+      delivers_self: order.vendor?.deliversSelf ?? false,
       courier_id: order.courierId,
       courier_rating_avg: courier?.ratingAvg ?? null,
       courier_rating_count: courier?.ratingCount ?? null,
@@ -684,7 +1051,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    if (order.status !== OrderStatus.COURIER_ACCEPTED && order.status !== OrderStatus.PICKED_UP) {
+      const trackingAllowedStatuses = [
+        OrderStatus.READY,
+        OrderStatus.HANDOFF_CONFIRMED,
+        OrderStatus.PICKED_UP,
+        OrderStatus.DELIVERED,
+        OrderStatus.COURIER_ACCEPTED,
+      ];
+    if (!order.courierId || !trackingAllowedStatuses.includes(order.status as OrderStatus)) {
       return reply.send({
         order_id: order.id,
         courier_id: order.courierId,
@@ -885,6 +1259,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       phone: client.phone,
       telegram_username: client.telegramUsername,
       about: client.about,
+      birth_date: client.birthDate ?? null,
+      avatar_url: client.avatarUrl ?? null,
+      avatar_file_id: client.avatarFileId ?? null,
     });
   });
 
@@ -904,7 +1281,18 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       phone?: string | null;
       telegram_username?: string | null;
       about?: string | null;
+      birth_date?: string | null;
+      avatar_url?: string | null;
+      avatar_file_id?: string | null;
     };
+
+    const birthDate =
+      payload.birth_date === undefined || payload.birth_date === null
+        ? undefined
+        : new Date(payload.birth_date);
+    if (birthDate && Number.isNaN(birthDate.getTime())) {
+      return reply.status(400).send({ message: "birth_date is invalid" });
+    }
 
     const client = await (prisma as PrismaClient).client.upsert({
       where: { id: clientId ?? "" },
@@ -913,6 +1301,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         phone: payload.phone ?? undefined,
         telegramUsername: payload.telegram_username ?? undefined,
         about: payload.about ?? undefined,
+        birthDate: birthDate,
+        avatarUrl: payload.avatar_url ?? undefined,
+        avatarFileId: payload.avatar_file_id ?? undefined,
       },
       create: {
         id: clientId ?? "",
@@ -920,6 +1311,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         phone: payload.phone ?? null,
         telegramUsername: payload.telegram_username ?? null,
         about: payload.about ?? null,
+        birthDate: birthDate ?? null,
+        avatarUrl: payload.avatar_url ?? null,
+        avatarFileId: payload.avatar_file_id ?? null,
       },
     });
 
@@ -929,6 +1323,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       phone: client.phone,
       telegram_username: client.telegramUsername,
       about: client.about,
+      birth_date: client.birthDate ?? null,
+      avatar_url: client.avatarUrl ?? null,
+      avatar_file_id: client.avatarFileId ?? null,
     });
   });
 
@@ -1092,7 +1489,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const courierId = resolveCourierId(request, role);
     if (!courierId && role !== "ADMIN") {
-      return reply.status(401).send({ message: "telegram initData is required" });
+      return reply.status(401).send({ message: "Unauthorized" });
     }
 
     const orderId = (request.params as { orderId: string }).orderId;
@@ -1101,34 +1498,29 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(404).send({ message: "order not found" });
     }
 
+      const vendor = await (prisma as PrismaClient).vendor.findUnique({
+        where: { id: order.vendorId },
+        select: { deliversSelf: true },
+      });
+      if (vendor?.deliversSelf) {
+        return reply.status(409).send({ message: "vendor handles delivery" });
+      }
+
     if (order.fulfillmentType !== FulfillmentType.DELIVERY) {
       return reply.status(400).send({ message: "order is not a delivery order" });
     }
 
-    if (!courierId && !order.courierId && role !== "ADMIN") {
-      return reply.status(400).send({ message: "x-courier-id is required" });
-    }
     if (order.courierId && courierId && order.courierId !== courierId && role !== "ADMIN") {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    try {
-      assertTransition(
-        order.status as OrderStatus,
-        OrderStatus.COURIER_ACCEPTED,
-        "COURIER",
-        order.fulfillmentType as FulfillmentType,
-      );
-    } catch (error) {
-      if (error instanceof Error) {
-        return reply.status(409).send({ message: error.message });
+      if (order.status !== OrderStatus.READY) {
+        return reply.status(409).send({ message: `Invalid status ${order.status}` });
       }
-    }
 
     const updated = await (prisma as PrismaClient).order.update({
       where: { id: order.id },
       data: {
-        status: OrderStatus.COURIER_ACCEPTED,
         courierId: order.courierId ?? courierId ?? null,
         events: {
           create: {
@@ -1149,7 +1541,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const courierId = resolveCourierId(request, role);
     if (!courierId && role !== "ADMIN") {
-      return reply.status(401).send({ message: "telegram initData is required" });
+      return reply.status(401).send({ message: "Unauthorized" });
     }
 
     const orders = await (prisma as PrismaClient).order.findMany({
@@ -1157,6 +1549,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         fulfillmentType: FulfillmentType.DELIVERY,
         status: OrderStatus.READY,
         courierId: null,
+        vendor: { deliversSelf: false },
       },
       orderBy: { createdAt: "asc" },
       take: 50,
@@ -1190,7 +1583,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const courierId = resolveCourierId(request, role);
     if (!courierId && role !== "ADMIN") {
-      return reply.status(401).send({ message: "telegram initData is required" });
+      return reply.status(401).send({ message: "Unauthorized" });
     }
 
     const orderId = (request.params as { orderId: string }).orderId;
@@ -1230,6 +1623,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       address_house: order.addressHouse,
       address_entrance: order.addressEntrance,
       address_apartment: order.addressApartment,
+      handoffCode: null,
+      deliveryCode: null,
+      pickupCode: null,
       items: order.items.map((item) => ({
         menu_item_id: item.menuItemId,
         quantity: item.quantity,
@@ -1250,7 +1646,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const courierId = resolveCourierId(request, role);
     if (!courierId && role !== "ADMIN") {
-      return reply.status(401).send({ message: "telegram initData is required" });
+      return reply.status(401).send({ message: "Unauthorized" });
     }
 
     const [courier, ratings, activeOrdersCount, deliveredCount] = await Promise.all([
@@ -1267,11 +1663,20 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       (prisma as PrismaClient).order.count({
         where: {
           courierId: courierId ?? "",
-          status: { in: [OrderStatus.COURIER_ACCEPTED, OrderStatus.PICKED_UP] },
+          status: {
+            in: [
+              OrderStatus.READY,
+              OrderStatus.HANDOFF_CONFIRMED,
+              OrderStatus.PICKED_UP,
+            ],
+          },
         },
       }),
       (prisma as PrismaClient).order.count({
-        where: { courierId: courierId ?? "", status: OrderStatus.DELIVERED },
+        where: {
+          courierId: courierId ?? "",
+          status: { in: [OrderStatus.DELIVERED, OrderStatus.COMPLETED] },
+        },
       }),
     ]);
 
@@ -1280,7 +1685,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       full_name: courier.fullName ?? null,
       phone: courier.phone ?? null,
       telegram_username: courier.telegramUsername ?? null,
-      photo_url: courier.photoUrl ?? null,
+      avatar_url: courier.avatarUrl ?? courier.photoUrl ?? null,
+      avatar_file_id: courier.avatarFileId ?? null,
       delivery_method: courier.deliveryMethod ?? null,
       is_available: courier.isAvailable,
       max_active_orders: courier.maxActiveOrders,
@@ -1308,7 +1714,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const courierId = resolveCourierId(request, role);
     if (!courierId && role !== "ADMIN") {
-      return reply.status(401).send({ message: "telegram initData is required" });
+      return reply.status(401).send({ message: "Unauthorized" });
     }
 
     const payload = request.body as {
@@ -1316,6 +1722,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       phone?: string | null;
       telegram_username?: string | null;
       photo_url?: string | null;
+      avatar_url?: string | null;
+      avatar_file_id?: string | null;
       delivery_method?: DeliveryMethod | null;
       is_available?: boolean;
       max_active_orders?: number;
@@ -1339,6 +1747,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         telegramUsername:
           payload.telegram_username === undefined ? undefined : payload.telegram_username,
         photoUrl: payload.photo_url === undefined ? undefined : payload.photo_url,
+        avatarUrl: payload.avatar_url === undefined ? undefined : payload.avatar_url,
+        avatarFileId:
+          payload.avatar_file_id === undefined ? undefined : payload.avatar_file_id,
         deliveryMethod:
           payload.delivery_method === undefined ? undefined : payload.delivery_method,
         isAvailable: payload.is_available,
@@ -1351,6 +1762,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         phone: payload.phone ?? null,
         telegramUsername: payload.telegram_username ?? null,
         photoUrl: payload.photo_url ?? null,
+        avatarUrl: payload.avatar_url ?? null,
+        avatarFileId: payload.avatar_file_id ?? null,
         deliveryMethod: payload.delivery_method ?? null,
         isAvailable: payload.is_available ?? true,
         maxActiveOrders: payload.max_active_orders ?? 1,
@@ -1362,7 +1775,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       full_name: courier.fullName ?? null,
       phone: courier.phone ?? null,
       telegram_username: courier.telegramUsername ?? null,
-      photo_url: courier.photoUrl ?? null,
+      avatar_url: courier.avatarUrl ?? courier.photoUrl ?? null,
+      avatar_file_id: courier.avatarFileId ?? null,
       delivery_method: courier.deliveryMethod ?? null,
       is_available: courier.isAvailable,
       max_active_orders: courier.maxActiveOrders,
@@ -1379,7 +1793,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const courierId = resolveCourierId(request, role);
     if (!courierId && role !== "ADMIN") {
-      return reply.status(401).send({ message: "telegram initData is required" });
+      return reply.status(401).send({ message: "Unauthorized" });
     }
 
     const ratings = await (prisma as PrismaClient).rating.findMany({
@@ -1406,7 +1820,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const courierId = resolveCourierId(request, role);
     if (!courierId && role !== "ADMIN") {
-      return reply.status(401).send({ message: "telegram initData is required" });
+      return reply.status(401).send({ message: "Unauthorized" });
     }
 
     const query = request.query as {
@@ -1424,7 +1838,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const orders = await (prisma as PrismaClient).order.findMany({
       where: {
         courierId: role === "ADMIN" ? undefined : courierId,
-        status: { in: [OrderStatus.DELIVERED, OrderStatus.CANCELLED] },
+        status: { in: [OrderStatus.DELIVERED, OrderStatus.COMPLETED, OrderStatus.CANCELLED] },
         createdAt:
           fromDate || toDate
             ? {
@@ -1466,7 +1880,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const courierId = resolveCourierId(request, role);
     if (!courierId && role !== "ADMIN") {
-      return reply.status(401).send({ message: "telegram initData is required" });
+      return reply.status(401).send({ message: "Unauthorized" });
     }
 
     const query = request.query as {
@@ -1497,7 +1911,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const orders = await (prisma as PrismaClient).order.findMany({
       where: {
         courierId: role === "ADMIN" ? undefined : courierId,
-        status: OrderStatus.DELIVERED,
+        status: { in: [OrderStatus.DELIVERED, OrderStatus.COMPLETED] },
         createdAt:
           fromDate || toDate
             ? {
@@ -1529,17 +1943,25 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const courierId = resolveCourierId(request, role);
     if (!courierId && role !== "ADMIN") {
-      return reply.status(401).send({ message: "telegram initData is required" });
+      return reply.status(401).send({ message: "Unauthorized" });
     }
 
     const orderId = (request.params as { orderId: string }).orderId;
-    const payload = request.body as { pickup_code?: string };
-    const normalizedPickup = payload.pickup_code
-      ? normalizeNumericCode(payload.pickup_code)
-      : null;
-    if (!normalizedPickup) {
-      return reply.status(400).send({ message: "pickup_code is required" });
-    }
+    const payload = (request.body ?? {}) as {
+      pickup_code?: string;
+      handoff_code?: string;
+      pickupCode?: string;
+      handoffCode?: string;
+    };
+    const normalizedPickup = payload.handoff_code
+      ? normalizeNumericCode(payload.handoff_code)
+      : payload.handoffCode
+        ? normalizeNumericCode(payload.handoffCode)
+        : payload.pickup_code
+          ? normalizeNumericCode(payload.pickup_code)
+          : payload.pickupCode
+            ? normalizeNumericCode(payload.pickupCode)
+            : null;
 
     const order = await (prisma as PrismaClient).order.findUnique({ where: { id: orderId } });
     if (!order) {
@@ -1554,10 +1976,159 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
+    if (order.status === OrderStatus.HANDOFF_CONFIRMED) {
+      try {
+        assertTransition(
+          order.status as OrderStatus,
+          OrderStatus.PICKED_UP,
+          "COURIER",
+          order.fulfillmentType as FulfillmentType,
+        );
+      } catch (error) {
+        if (error instanceof Error) {
+          return reply.status(409).send({ message: error.message });
+        }
+      }
+
+      const updated = await (prisma as PrismaClient).order.update({
+        where: { id: order.id },
+        data: {
+          status: OrderStatus.PICKED_UP,
+          events: {
+            create: {
+              eventType: "courier_picked_up",
+            },
+          },
+        },
+      });
+
+      return reply.send({ order_id: updated.id, status: updated.status });
+    }
+
+    if (!normalizedPickup) {
+      return reply.status(400).send({ message: "handoff_code is required" });
+    }
+
+      try {
+        assertTransition(
+          order.status as OrderStatus,
+          OrderStatus.HANDOFF_CONFIRMED,
+          "COURIER",
+          order.fulfillmentType as FulfillmentType,
+        );
+      } catch (error) {
+        if (error instanceof Error) {
+          return reply.status(409).send({ message: error.message });
+        }
+      }
+
+      try {
+        assertTransition(
+          OrderStatus.HANDOFF_CONFIRMED,
+          OrderStatus.PICKED_UP,
+          "COURIER",
+          order.fulfillmentType as FulfillmentType,
+        );
+      } catch (error) {
+        if (error instanceof Error) {
+          return reply.status(409).send({ message: error.message });
+        }
+      }
+
+    try {
+      codeLimiter.check(`handoff:${order.id}:${courierId ?? "unknown"}`);
+    } catch (error) {
+      if (error instanceof RateLimitError) {
+        return reply.status(429).send({ message: "too many attempts" });
+      }
+    }
+
+    if (!order.pickupCodeHash || !order.pickupCodeSalt) {
+      return reply.status(409).send({ message: "handoff_code not generated yet" });
+    }
+
+    const isValid = verifyCode(normalizedPickup, order.pickupCodeHash, order.pickupCodeSalt);
+    if (!isValid) {
+      return reply.status(400).send({ message: "invalid handoff code" });
+    }
+    codeLimiter.reset(`handoff:${order.id}:${courierId ?? "unknown"}`);
+
+      const updated = await (prisma as PrismaClient).$transaction(async (tx) => {
+        await tx.order.update({
+          where: { id: order.id },
+          data: {
+            status: OrderStatus.HANDOFF_CONFIRMED,
+            events: { create: { eventType: "handoff_confirmed" } },
+          },
+        });
+        return tx.order.update({
+          where: { id: order.id },
+          data: {
+            status: OrderStatus.PICKED_UP,
+            events: { create: { eventType: "courier_picked_up" } },
+          },
+        });
+      });
+
+    return reply.send({ order_id: updated.id, status: updated.status });
+  });
+
+  app.post("/courier/orders/:orderId/handoff", async (request, reply) => {
+    const role = readRole(request);
+    if (!role || (role !== "COURIER" && role !== "ADMIN")) {
+      return reply.status(403).send({ message: "Forbidden" });
+    }
+
+    const courierId = resolveCourierId(request, role);
+    if (!courierId && role !== "ADMIN") {
+      return reply.status(401).send({ message: "Unauthorized" });
+    }
+
+    const orderId = (request.params as { orderId: string }).orderId;
+    const payload = (request.body ?? {}) as {
+      handoff_code?: string;
+      pickup_code?: string;
+      handoffCode?: string;
+      pickupCode?: string;
+    };
+    const normalizedCode = payload.handoff_code
+      ? normalizeNumericCode(payload.handoff_code)
+      : payload.handoffCode
+        ? normalizeNumericCode(payload.handoffCode)
+        : payload.pickup_code
+          ? normalizeNumericCode(payload.pickup_code)
+          : payload.pickupCode
+            ? normalizeNumericCode(payload.pickupCode)
+            : null;
+    if (!normalizedCode) {
+      return reply.status(400).send({ message: "handoff_code is required" });
+    }
+
+    const order = await (prisma as PrismaClient).order.findUnique({ where: { id: orderId } });
+    if (!order) {
+      return reply.status(404).send({ message: "order not found" });
+    }
+
+    if (order.fulfillmentType !== FulfillmentType.DELIVERY) {
+      return reply.status(400).send({ message: "order is not a delivery order" });
+    }
+
+    const vendor = await (prisma as PrismaClient).vendor.findUnique({
+      where: { id: order.vendorId },
+      select: { deliversSelf: true },
+    });
+    if (vendor?.deliversSelf) {
+      return reply.status(400).send({ message: "order is delivered by vendor" });
+    }
+
+    if (order.courierId && courierId && order.courierId !== courierId && role !== "ADMIN") {
+      return reply.status(403).send({ message: "Forbidden" });
+    }
+
     try {
       assertTransition(
         order.status as OrderStatus,
-        OrderStatus.PICKED_UP,
+        OrderStatus.HANDOFF_CONFIRMED,
         "COURIER",
         order.fulfillmentType as FulfillmentType,
       );
@@ -1568,7 +2139,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     try {
-      codeLimiter.check(`pickup:${order.id}:${courierId ?? "unknown"}`);
+      codeLimiter.check(`handoff:${order.id}:${courierId ?? "unknown"}`);
     } catch (error) {
       if (error instanceof RateLimitError) {
         return reply.status(429).send({ message: "too many attempts" });
@@ -1576,22 +2147,22 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     if (!order.pickupCodeHash || !order.pickupCodeSalt) {
-      return reply.status(409).send({ message: "pickup_code not generated yet" });
+      return reply.status(409).send({ message: "handoff_code not generated yet" });
     }
 
-    const isValid = verifyCode(normalizedPickup, order.pickupCodeHash, order.pickupCodeSalt);
+    const isValid = verifyCode(normalizedCode, order.pickupCodeHash, order.pickupCodeSalt);
     if (!isValid) {
-      return reply.status(400).send({ message: "invalid pickup code" });
+      return reply.status(400).send({ message: "invalid handoff code" });
     }
-    codeLimiter.reset(`pickup:${order.id}:${courierId ?? "unknown"}`);
+    codeLimiter.reset(`handoff:${order.id}:${courierId ?? "unknown"}`);
 
     const updated = await (prisma as PrismaClient).order.update({
       where: { id: order.id },
       data: {
-        status: OrderStatus.PICKED_UP,
+        status: OrderStatus.HANDOFF_CONFIRMED,
         events: {
           create: {
-            eventType: "courier_picked_up",
+            eventType: "handoff_confirmed",
           },
         },
       },
@@ -1608,14 +2179,16 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const courierId = resolveCourierId(request, role);
     if (!courierId && role !== "ADMIN") {
-      return reply.status(401).send({ message: "telegram initData is required" });
+      return reply.status(401).send({ message: "Unauthorized" });
     }
 
     const orderId = (request.params as { orderId: string }).orderId;
-    const payload = request.body as { delivery_code?: string };
+    const payload = (request.body ?? {}) as { delivery_code?: string; deliveryCode?: string };
     const normalizedDelivery = payload.delivery_code
       ? normalizeNumericCode(payload.delivery_code)
-      : null;
+      : payload.deliveryCode
+        ? normalizeNumericCode(payload.deliveryCode)
+        : null;
     if (!normalizedDelivery) {
       return reply.status(400).send({ message: "delivery_code is required" });
     }
@@ -1673,9 +2246,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       data: {
         status: OrderStatus.DELIVERED,
         events: {
-          create: {
-            eventType: "courier_delivered",
-          },
+          create: [{ eventType: "courier_delivered" }],
         },
       },
     });
@@ -1691,7 +2262,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const courierId = resolveCourierId(request, role);
     if (!courierId && role !== "ADMIN") {
-      return reply.status(401).send({ message: "telegram initData is required" });
+      return reply.status(401).send({ message: "Unauthorized" });
     }
 
     const orderId = (request.params as { orderId: string }).orderId;
@@ -1705,9 +2276,15 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(404).send({ message: "order not found" });
     }
 
-    if (order.status !== OrderStatus.COURIER_ACCEPTED && order.status !== OrderStatus.PICKED_UP) {
-      return reply.status(409).send({ message: "order is not active for tracking" });
-    }
+      if (
+        ![
+          OrderStatus.READY,
+          OrderStatus.HANDOFF_CONFIRMED,
+          OrderStatus.PICKED_UP,
+        ].includes(order.status as OrderStatus)
+      ) {
+        return reply.status(409).send({ message: "order is not active for tracking" });
+      }
 
     if (order.courierId && courierId && order.courierId !== courierId && role !== "ADMIN") {
       return reply.status(403).send({ message: "Forbidden" });
@@ -1734,7 +2311,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -1742,20 +2319,19 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const orders = await (prisma as PrismaClient).order.findMany({
       where: {
         vendorId: role === "ADMIN" ? undefined : vendorId,
-        status: {
-          in: [
-            OrderStatus.NEW,
-            OrderStatus.ACCEPTED,
-            OrderStatus.COOKING,
-            OrderStatus.READY,
-            OrderStatus.COURIER_ACCEPTED,
-            OrderStatus.PICKED_UP,
-            OrderStatus.READY_FOR_PICKUP,
-          ],
-        },
+          status: {
+            in: [
+              OrderStatus.NEW,
+              OrderStatus.ACCEPTED,
+              OrderStatus.COOKING,
+              OrderStatus.READY,
+              OrderStatus.HANDOFF_CONFIRMED,
+              OrderStatus.PICKED_UP,
+            ],
+          },
       },
       orderBy: { createdAt: "desc" },
-      include: { items: true },
+      include: { items: true, courier: { select: { id: true, fullName: true } } },
     });
 
     return reply.send({ orders: orders.map(mapOrderSummary) });
@@ -1767,7 +2343,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -1790,6 +2366,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         ? {
             in: [
               OrderStatus.DELIVERED,
+              OrderStatus.COMPLETED,
               OrderStatus.CANCELLED,
               OrderStatus.CANCELLED_BY_VENDOR,
               OrderStatus.PICKED_UP_BY_CUSTOMER,
@@ -1802,9 +2379,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
                 OrderStatus.ACCEPTED,
                 OrderStatus.COOKING,
                 OrderStatus.READY,
-                OrderStatus.COURIER_ACCEPTED,
+                OrderStatus.HANDOFF_CONFIRMED,
                 OrderStatus.PICKED_UP,
-                OrderStatus.READY_FOR_PICKUP,
               ],
             }
           : undefined;
@@ -1824,7 +2400,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       orderBy: { createdAt: "desc" },
       skip,
       take: limit,
-      include: { items: true },
+      include: { items: true, courier: { select: { id: true, fullName: true } } },
     });
 
     return reply.send({
@@ -1840,7 +2416,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -1848,10 +2424,18 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const orders = await (prisma as PrismaClient).order.findMany({
       where: {
         vendorId: role === "ADMIN" ? undefined : vendorId,
-        status: { in: [OrderStatus.DELIVERED, OrderStatus.CANCELLED, OrderStatus.CANCELLED_BY_VENDOR, OrderStatus.PICKED_UP_BY_CUSTOMER] },
+        status: {
+          in: [
+            OrderStatus.DELIVERED,
+            OrderStatus.COMPLETED,
+            OrderStatus.CANCELLED,
+            OrderStatus.CANCELLED_BY_VENDOR,
+            OrderStatus.PICKED_UP_BY_CUSTOMER,
+          ],
+        },
       },
       orderBy: { createdAt: "desc" },
-      include: { items: true },
+      include: { items: true, courier: { select: { id: true, fullName: true } } },
     });
 
     return reply.send({ orders: orders.map(mapOrderSummary) });
@@ -1863,7 +2447,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -1878,6 +2462,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         rating: true,
         promoCode: true,
         vendor: true,
+        courier: { select: { id: true, fullName: true } },
       },
     });
     if (!order) {
@@ -1892,8 +2477,13 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       status: order.status,
       vendor_id: order.vendorId,
       vendor_name: order.vendor?.name ?? null,
+      delivers_self: order.vendor?.deliversSelf ?? false,
       client_id: order.clientId,
       courier_id: order.courierId,
+      courier:
+        order.courierId
+          ? { id: order.courierId, full_name: order.courier?.fullName ?? null }
+          : null,
       fulfillment_type: order.fulfillmentType,
       delivery_location:
         order.deliveryLat !== null && order.deliveryLng !== null
@@ -1965,7 +2555,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -1978,7 +2568,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const orders = await (prisma as PrismaClient).order.findMany({
       where: {
         vendorId: role === "ADMIN" ? undefined : vendorId,
-        status: OrderStatus.DELIVERED,
+        status: { in: [OrderStatus.DELIVERED, OrderStatus.COMPLETED] },
         createdAt: { gte: start },
       },
       orderBy: { createdAt: "desc" },
@@ -1999,7 +2589,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2028,13 +2618,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
 
     const vendor = await (prisma as PrismaClient).vendor.findUnique({
       where: { id: vendorId ?? "" },
+      include: { schedules: true },
     });
     if (!vendor) {
       return reply.status(404).send({ message: "vendor not found" });
@@ -2052,6 +2643,19 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       address_text: vendor.addressText,
       opening_hours: vendor.openingHours,
       supports_pickup: vendor.supportsPickup,
+      delivers_self: vendor.deliversSelf,
+      is_active: vendor.isActive,
+      is_blocked: vendor.isBlocked,
+      main_image_url: vendor.mainImageUrl ?? null,
+      gallery_images: vendor.galleryImages ?? [],
+      timezone: vendor.timezone,
+      schedule: vendor.schedules.map((entry) => ({
+        weekday: entry.weekday,
+        open_time: entry.openTime,
+        close_time: entry.closeTime,
+        closed: entry.closed,
+        is24h: entry.is24h,
+      })),
       payment_methods: {
         cash: true,
         card: true,
@@ -2066,7 +2670,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2083,6 +2687,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       address_text?: string | null;
       opening_hours?: string | null;
       supports_pickup?: boolean;
+      delivers_self?: boolean;
+      main_image_url?: string | null;
+      gallery_images?: string[] | null;
+      timezone?: string | null;
+      schedule?: unknown;
       geo?: { lat: number; lng: number };
     };
 
@@ -2093,24 +2702,56 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           ? payload.phone
           : undefined;
 
-    const vendor = await (prisma as PrismaClient).vendor.update({
-      where: { id: vendorId ?? "" },
-      data: {
-        name: payload.name,
-        ownerFullName:
-          payload.owner_full_name === undefined ? undefined : payload.owner_full_name,
-        phone1: resolvedPhone1,
-        phone2: payload.phone2 === undefined ? undefined : payload.phone2,
-        phone3: payload.phone3 === undefined ? undefined : payload.phone3,
-        email: payload.email === undefined ? undefined : payload.email,
-        inn: payload.inn === undefined ? undefined : payload.inn,
-        phone: resolvedPhone1 === undefined ? undefined : resolvedPhone1,
-        addressText: payload.address_text === undefined ? undefined : payload.address_text,
-        openingHours: payload.opening_hours === undefined ? undefined : payload.opening_hours,
-        supportsPickup: payload.supports_pickup,
-        geoLat: payload.geo?.lat,
-        geoLng: payload.geo?.lng,
-      },
+    const scheduleEntries = normalizeScheduleInput(payload.schedule);
+    if (payload.schedule !== undefined && !scheduleEntries) {
+      return reply.status(400).send({ message: "schedule is invalid" });
+    }
+
+    const vendor = await (prisma as PrismaClient).$transaction(async (tx) => {
+      const updated = await tx.vendor.update({
+        where: { id: vendorId ?? "" },
+        data: {
+          name: payload.name,
+          ownerFullName:
+            payload.owner_full_name === undefined ? undefined : payload.owner_full_name,
+          phone1: resolvedPhone1,
+          phone2: payload.phone2 === undefined ? undefined : payload.phone2,
+          phone3: payload.phone3 === undefined ? undefined : payload.phone3,
+          email: payload.email === undefined ? undefined : payload.email,
+          inn: payload.inn === undefined ? undefined : payload.inn,
+          phone: resolvedPhone1 === undefined ? undefined : resolvedPhone1,
+          addressText: payload.address_text === undefined ? undefined : payload.address_text,
+          openingHours: payload.opening_hours === undefined ? undefined : payload.opening_hours,
+          supportsPickup: payload.supports_pickup,
+          deliversSelf: payload.delivers_self,
+          mainImageUrl:
+            payload.main_image_url === undefined ? undefined : payload.main_image_url,
+          galleryImages:
+            payload.gallery_images === undefined ? undefined : payload.gallery_images ?? [],
+          timezone:
+            payload.timezone === undefined ? undefined : payload.timezone ?? "Asia/Tashkent",
+          geoLat: payload.geo?.lat,
+          geoLng: payload.geo?.lng,
+        },
+      });
+
+      if (scheduleEntries) {
+        await tx.vendorSchedule.deleteMany({ where: { vendorId: updated.id } });
+        if (scheduleEntries.length > 0) {
+          await tx.vendorSchedule.createMany({
+            data: scheduleEntries.map((entry) => ({
+              vendorId: updated.id,
+              weekday: entry.weekday,
+              openTime: entry.openTime,
+              closeTime: entry.closeTime,
+              closed: entry.closed,
+              is24h: entry.is24h,
+            })),
+          });
+        }
+      }
+
+      return updated;
     });
 
     return reply.send({
@@ -2125,6 +2766,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       address_text: vendor.addressText,
       opening_hours: vendor.openingHours,
       supports_pickup: vendor.supportsPickup,
+      delivers_self: vendor.deliversSelf,
+      main_image_url: vendor.mainImageUrl ?? null,
+      gallery_images: vendor.galleryImages ?? [],
+      timezone: vendor.timezone,
       geo: { lat: vendor.geoLat, lng: vendor.geoLng },
     });
   });
@@ -2135,7 +2780,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2192,7 +2837,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (!vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2273,7 +2918,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2402,7 +3047,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2428,7 +3073,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2447,7 +3092,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2466,7 +3111,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (!vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2512,7 +3157,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2560,7 +3205,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2584,7 +3229,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (!vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2637,7 +3282,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2685,7 +3330,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(403).send({ message: "Forbidden" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role);
     if (role === "VENDOR" && !vendorId) {
       return reply.status(400).send({ message: "x-vendor-id is required" });
     }
@@ -2715,13 +3360,28 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(404).send({ message: "order not found" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role) ?? order.vendorId;
     if (role === "VENDOR" && order.vendorId !== vendorId) {
       return reply.status(403).send({ message: "Forbidden" });
     }
+    const vendor = vendorId
+      ? await (prisma as PrismaClient).vendor.findUnique({ where: { id: vendorId } })
+      : null;
+    if (!vendor) {
+      return reply.status(404).send({ message: "vendor not found" });
+    }
+
+    if (order.status === OrderStatus.COOKING) {
+      return reply.send({ order_id: order.id, status: order.status });
+    }
 
     try {
-      assertTransition(order.status as OrderStatus, OrderStatus.ACCEPTED, "VENDOR", order.fulfillmentType as FulfillmentType);
+      assertTransition(
+        order.status as OrderStatus,
+        OrderStatus.ACCEPTED,
+        "VENDOR",
+        order.fulfillmentType as FulfillmentType,
+      );
     } catch (error) {
       if (error instanceof Error) {
         return reply.status(409).send({ message: error.message });
@@ -2731,8 +3391,13 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const updated = await (prisma as PrismaClient).order.update({
       where: { id: order.id },
       data: {
-        status: OrderStatus.ACCEPTED,
-        events: { create: { eventType: "vendor_accepted" } },
+        status: OrderStatus.COOKING,
+        events: {
+          create: [
+            { eventType: "vendor_accepted" },
+            { eventType: "vendor_cooking" },
+          ],
+        },
       },
     });
 
@@ -2757,9 +3422,15 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(404).send({ message: "order not found" });
     }
 
-    const vendorId = readHeader(request, "x-vendor-id");
+    const vendorId = resolveVendorId(request, role) ?? order.vendorId;
     if (role === "VENDOR" && order.vendorId !== vendorId) {
       return reply.status(403).send({ message: "Forbidden" });
+    }
+    const vendor = vendorId
+      ? await (prisma as PrismaClient).vendor.findUnique({ where: { id: vendorId } })
+      : null;
+    if (!vendor) {
+      return reply.status(404).send({ message: "vendor not found" });
     }
 
     try {
@@ -2771,10 +3442,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const eventType = nextStatus === OrderStatus.READY ? "order_ready" : "vendor_status_updated";
-    let pickupCode: string | null = null;
-    if (nextStatus === OrderStatus.READY && order.fulfillmentType === FulfillmentType.DELIVERY) {
-      pickupCode = generateNumericCode();
-      const pickupHash = hashCode(pickupCode);
+    let handoffCode: string | null = null;
+    if (
+      nextStatus === OrderStatus.READY &&
+      order.fulfillmentType === FulfillmentType.DELIVERY &&
+      !vendor.deliversSelf
+    ) {
+      handoffCode = generateNumericCode();
+      const pickupHash = hashCode(handoffCode);
       const updated = await (prisma as PrismaClient).order.update({
         where: { id: order.id },
         data: {
@@ -2787,7 +3462,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.send({
         order_id: updated.id,
         status: updated.status,
-        pickup_code: pickupCode,
+        handoff_code: handoffCode,
       });
     }
 
@@ -2799,7 +3474,150 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       },
     });
 
-    return reply.send({ order_id: updated.id, status: updated.status, pickup_code: null });
+    return reply.send({ order_id: updated.id, status: updated.status, handoff_code: null });
+  });
+
+  app.post("/vendor/orders/:orderId/pickup", async (request, reply) => {
+    const role = readRole(request);
+    if (!role || (role !== "VENDOR" && role !== "ADMIN")) {
+      return reply.status(403).send({ message: "Forbidden" });
+    }
+
+    const vendorId = resolveVendorId(request, role);
+    if (role === "VENDOR" && !vendorId) {
+      return reply.status(400).send({ message: "x-vendor-id is required" });
+    }
+
+    const payload = request.body as { pickup_code?: string };
+    const normalizedCode = payload.pickup_code
+      ? normalizeNumericCode(payload.pickup_code)
+      : null;
+    if (!normalizedCode) {
+      return reply.status(400).send({ message: "pickup_code is required" });
+    }
+
+    const orderId = (request.params as { orderId: string }).orderId;
+    const order = await (prisma as PrismaClient).order.findUnique({ where: { id: orderId } });
+    if (!order) {
+      return reply.status(404).send({ message: "order not found" });
+    }
+    if (role === "VENDOR" && order.vendorId !== vendorId) {
+      return reply.status(403).send({ message: "Forbidden" });
+    }
+    if (order.fulfillmentType !== FulfillmentType.PICKUP) {
+      return reply.status(400).send({ message: "order is not a pickup order" });
+    }
+
+    try {
+      assertTransition(
+        order.status as OrderStatus,
+        OrderStatus.HANDOFF_CONFIRMED,
+        "VENDOR",
+        order.fulfillmentType as FulfillmentType,
+      );
+    } catch (error) {
+      if (error instanceof Error) {
+        return reply.status(409).send({ message: error.message });
+      }
+    }
+
+    if (!order.pickupCodeHash || !order.pickupCodeSalt) {
+      return reply.status(409).send({ message: "pickup_code not generated yet" });
+    }
+
+    const isValid = verifyCode(normalizedCode, order.pickupCodeHash, order.pickupCodeSalt);
+    if (!isValid) {
+      return reply.status(400).send({ message: "invalid pickup code" });
+    }
+
+    const updated = await (prisma as PrismaClient).$transaction(async (tx) => {
+      await tx.order.update({
+        where: { id: order.id },
+        data: {
+          status: OrderStatus.HANDOFF_CONFIRMED,
+          events: { create: { eventType: "pickup_confirmed" } },
+        },
+      });
+      return tx.order.update({
+        where: { id: order.id },
+        data: {
+          status: OrderStatus.COMPLETED,
+          events: { create: { eventType: "order_completed" } },
+        },
+      });
+    });
+
+    return reply.send({ order_id: updated.id, status: updated.status });
+  });
+
+  app.post("/vendor/orders/:orderId/deliver", async (request, reply) => {
+    const role = readRole(request);
+    if (!role || (role !== "VENDOR" && role !== "ADMIN")) {
+      return reply.status(403).send({ message: "Forbidden" });
+    }
+
+    const vendorId = resolveVendorId(request, role);
+    if (role === "VENDOR" && !vendorId) {
+      return reply.status(400).send({ message: "x-vendor-id is required" });
+    }
+
+    const payload = request.body as { delivery_code?: string };
+    const normalizedCode = payload.delivery_code
+      ? normalizeNumericCode(payload.delivery_code)
+      : null;
+    if (!normalizedCode) {
+      return reply.status(400).send({ message: "delivery_code is required" });
+    }
+
+    const orderId = (request.params as { orderId: string }).orderId;
+    const order = await (prisma as PrismaClient).order.findUnique({
+      where: { id: orderId },
+      include: { vendor: true },
+    });
+    if (!order) {
+      return reply.status(404).send({ message: "order not found" });
+    }
+    if (role === "VENDOR" && order.vendorId !== vendorId) {
+      return reply.status(403).send({ message: "Forbidden" });
+    }
+    if (order.fulfillmentType !== FulfillmentType.DELIVERY) {
+      return reply.status(400).send({ message: "order is not a delivery order" });
+    }
+      if (!order.vendor?.deliversSelf) {
+        return reply.status(400).send({ message: "vendor self-delivery is disabled" });
+      }
+
+      try {
+        assertTransition(
+          order.status as OrderStatus,
+          OrderStatus.DELIVERED,
+          "VENDOR",
+          order.fulfillmentType as FulfillmentType,
+        );
+      } catch (error) {
+        if (error instanceof Error) {
+          return reply.status(409).send({ message: error.message });
+        }
+      }
+
+      if (!order.deliveryCodeHash || !order.deliveryCodeSalt) {
+        return reply.status(409).send({ message: "delivery_code not generated yet" });
+      }
+
+    const isValid = verifyCode(normalizedCode, order.deliveryCodeHash, order.deliveryCodeSalt);
+    if (!isValid) {
+      return reply.status(400).send({ message: "invalid delivery code" });
+    }
+
+      const updated = await (prisma as PrismaClient).order.update({
+        where: { id: order.id },
+        data: {
+          status: OrderStatus.DELIVERED,
+          events: { create: { eventType: "vendor_delivered" } },
+        },
+      });
+
+    return reply.send({ order_id: updated.id, status: updated.status });
   });
 
 
@@ -2829,7 +3647,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       }),
       (prisma as PrismaClient).order.groupBy({
         by: ["vendorId"],
-        where: { status: OrderStatus.DELIVERED, createdAt: { gte: weekStart } },
+        where: { status: { in: [OrderStatus.DELIVERED, OrderStatus.COMPLETED] }, createdAt: { gte: weekStart } },
         _count: { _all: true },
         _sum: { total: true },
       }),
@@ -2861,13 +3679,21 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         phone3: vendor.phone3,
         email: vendor.email,
         phone: vendor.phone,
+        login: vendor.login,
         inn: vendor.inn,
         category: vendor.category,
         supports_pickup: vendor.supportsPickup,
+        delivers_self: vendor.deliversSelf,
         address_text: vendor.addressText,
         is_active: vendor.isActive,
+        is_blocked: vendor.isBlocked,
+        blocked_reason: vendor.blockedReason,
+        blocked_at: vendor.blockedAt,
         opening_hours: vendor.openingHours,
         payout_details: vendor.payoutDetails,
+        main_image_url: vendor.mainImageUrl ?? null,
+        gallery_images: vendor.galleryImages ?? [],
+        timezone: vendor.timezone ?? "Asia/Tashkent",
         geo: { lat: vendor.geoLat, lng: vendor.geoLng },
         rating_avg: vendor.ratingAvg ?? 0,
         rating_count: vendor.ratingCount ?? 0,
@@ -2892,6 +3718,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const payload = request.body as {
       name?: string;
       description?: string | null;
+      login?: string | null;
+      password?: string | null;
       owner_full_name?: string | null;
       phone?: string;
       phone1?: string;
@@ -2901,10 +3729,17 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       inn?: string;
       category?: string;
       supports_pickup?: boolean;
+      delivers_self?: boolean;
       address_text?: string;
       is_active?: boolean;
+      is_blocked?: boolean;
+      blocked_reason?: string | null;
       opening_hours?: string;
       payout_details?: unknown;
+      main_image_url?: string | null;
+      gallery_images?: string[] | null;
+      timezone?: string | null;
+      schedule?: unknown;
       geo?: { lat?: number; lng?: number };
     };
 
@@ -2922,26 +3757,65 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       return reply.status(400).send({ message: "geo.lat and geo.lng are required" });
     }
 
-    const vendor = await (prisma as PrismaClient).vendor.create({
-      data: {
-        name: payload.name,
-        description: payload.description ?? null,
-        ownerFullName: payload.owner_full_name ?? null,
-        phone1,
-        phone2: payload.phone2 ?? null,
-        phone3: payload.phone3 ?? null,
-        email: payload.email ?? null,
-        phone: phone1,
-        inn: payload.inn ?? null,
-        category: payload.category as string,
-        supportsPickup: payload.supports_pickup ?? false,
-        addressText: payload.address_text ?? null,
-        isActive: payload.is_active ?? true,
-        openingHours: payload.opening_hours ?? null,
-        payoutDetails: payload.payout_details ?? undefined,
-        geoLat: payload.geo.lat,
-        geoLng: payload.geo.lng,
-      },
+    let passwordHash: string | null = null;
+    if (payload.login || payload.password) {
+      if (!payload.login || !payload.password) {
+        return reply.status(400).send({ message: "login and password are required" });
+      }
+      passwordHash = await hashPassword(payload.password);
+    }
+
+    const scheduleEntries = normalizeScheduleInput(payload.schedule);
+    if (payload.schedule !== undefined && !scheduleEntries) {
+      return reply.status(400).send({ message: "schedule is invalid" });
+    }
+
+    const vendor = await (prisma as PrismaClient).$transaction(async (tx) => {
+      const created = await tx.vendor.create({
+        data: {
+          login: payload.login ?? null,
+          passwordHash: passwordHash ?? null,
+          name: payload.name,
+          description: payload.description ?? null,
+          ownerFullName: payload.owner_full_name ?? null,
+          phone1,
+          phone2: payload.phone2 ?? null,
+          phone3: payload.phone3 ?? null,
+          email: payload.email ?? null,
+          phone: phone1,
+          inn: payload.inn ?? null,
+          category: payload.category as string,
+          supportsPickup: payload.supports_pickup ?? false,
+          deliversSelf: payload.delivers_self ?? false,
+          addressText: payload.address_text ?? null,
+          isActive: payload.is_active ?? true,
+          isBlocked: payload.is_blocked ?? false,
+          blockedReason: payload.blocked_reason ?? null,
+          blockedAt: payload.is_blocked ? new Date() : null,
+          openingHours: payload.opening_hours ?? null,
+          payoutDetails: payload.payout_details ?? undefined,
+          mainImageUrl: payload.main_image_url ?? null,
+          galleryImages: payload.gallery_images ?? [],
+          timezone: payload.timezone ?? "Asia/Tashkent",
+          geoLat: payload.geo.lat,
+          geoLng: payload.geo.lng,
+        },
+      });
+
+      if (scheduleEntries && scheduleEntries.length > 0) {
+        await tx.vendorSchedule.createMany({
+          data: scheduleEntries.map((entry) => ({
+            vendorId: created.id,
+            weekday: entry.weekday,
+            openTime: entry.openTime,
+            closeTime: entry.closeTime,
+            closed: entry.closed,
+            is24h: entry.is24h,
+          })),
+        });
+      }
+
+      return created;
     });
 
     return reply.status(201).send({
@@ -2954,13 +3828,21 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       phone3: vendor.phone3,
       email: vendor.email,
       phone: vendor.phone,
+      login: vendor.login,
       inn: vendor.inn,
       category: vendor.category,
       supports_pickup: vendor.supportsPickup,
+      delivers_self: vendor.deliversSelf,
       address_text: vendor.addressText,
       is_active: vendor.isActive,
+      is_blocked: vendor.isBlocked,
+      blocked_reason: vendor.blockedReason,
+      blocked_at: vendor.blockedAt,
       opening_hours: vendor.openingHours,
       payout_details: vendor.payoutDetails,
+      main_image_url: vendor.mainImageUrl ?? null,
+      gallery_images: vendor.galleryImages ?? [],
+      timezone: vendor.timezone,
       geo: { lat: vendor.geoLat, lng: vendor.geoLng },
       created_at: vendor.createdAt,
     });
@@ -2976,6 +3858,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const vendorId = (request.params as { vendorId: string }).vendorId;
     const vendor = await (prisma as PrismaClient).vendor.findUnique({
       where: { id: vendorId },
+      include: { schedules: true },
     });
     if (!vendor) {
       return reply.status(404).send({ message: "vendor not found" });
@@ -2991,13 +3874,26 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       phone3: vendor.phone3,
       email: vendor.email,
       phone: vendor.phone,
+      login: vendor.login,
       inn: vendor.inn,
       category: vendor.category,
       supports_pickup: vendor.supportsPickup,
+      delivers_self: vendor.deliversSelf,
       address_text: vendor.addressText,
       is_active: vendor.isActive,
+      is_blocked: vendor.isBlocked,
+      blocked_reason: vendor.blockedReason,
+      blocked_at: vendor.blockedAt,
       opening_hours: vendor.openingHours,
       payout_details: vendor.payoutDetails,
+      timezone: vendor.timezone,
+      schedule: vendor.schedules.map((entry) => ({
+        weekday: entry.weekday,
+        open_time: entry.openTime,
+        close_time: entry.closeTime,
+        closed: entry.closed,
+        is24h: entry.is24h,
+      })),
       geo: { lat: vendor.geoLat, lng: vendor.geoLng },
       rating_avg: vendor.ratingAvg ?? 0,
       rating_count: vendor.ratingCount ?? 0,
@@ -3144,6 +4040,8 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const payload = request.body as {
       name?: string;
       description?: string | null;
+      login?: string | null;
+      password?: string | null;
       owner_full_name?: string | null;
       phone?: string | null;
       phone1?: string | null;
@@ -3153,10 +4051,17 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       inn?: string | null;
       category?: string;
       supports_pickup?: boolean;
+      delivers_self?: boolean;
       address_text?: string | null;
       is_active?: boolean;
+      is_blocked?: boolean;
+      blocked_reason?: string | null;
       opening_hours?: string | null;
       payout_details?: unknown | null;
+      main_image_url?: string | null;
+      gallery_images?: string[] | null;
+      timezone?: string | null;
+      schedule?: unknown;
       geo?: { lat?: number; lng?: number };
     };
 
@@ -3178,28 +4083,85 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           ? payload.phone
           : undefined;
 
-    const vendor = await (prisma as PrismaClient).vendor.update({
-      where: { id: vendorId },
-      data: {
-        name: payload.name,
-        description: payload.description === undefined ? undefined : payload.description,
-        ownerFullName:
-          payload.owner_full_name === undefined ? undefined : payload.owner_full_name,
-        phone1: resolvedPhone1,
-        phone2: payload.phone2 === undefined ? undefined : payload.phone2,
-        phone3: payload.phone3 === undefined ? undefined : payload.phone3,
-        email: payload.email === undefined ? undefined : payload.email,
-        phone: resolvedPhone1 === undefined ? undefined : resolvedPhone1,
-        inn: payload.inn === undefined ? undefined : payload.inn,
-        category: payload.category as string | undefined,
-        supportsPickup: payload.supports_pickup,
-        addressText: payload.address_text === undefined ? undefined : payload.address_text,
-        isActive: payload.is_active,
-        openingHours: payload.opening_hours === undefined ? undefined : payload.opening_hours,
-        payoutDetails: payload.payout_details === undefined ? undefined : payload.payout_details,
-        geoLat: payload.geo?.lat === undefined ? undefined : payload.geo.lat,
-        geoLng: payload.geo?.lng === undefined ? undefined : payload.geo.lng,
-      },
+    let passwordHashUpdate: string | undefined;
+    if (payload.login !== undefined || payload.password !== undefined) {
+      if (!payload.login || !payload.password) {
+        return reply.status(400).send({ message: "login and password are required" });
+      }
+      passwordHashUpdate = await hashPassword(payload.password);
+    }
+
+    const isBlocked =
+      payload.is_blocked === undefined ? existing.isBlocked : payload.is_blocked ?? false;
+
+    const scheduleEntries = normalizeScheduleInput(payload.schedule);
+    if (payload.schedule !== undefined && !scheduleEntries) {
+      return reply.status(400).send({ message: "schedule is invalid" });
+    }
+
+    const vendor = await (prisma as PrismaClient).$transaction(async (tx) => {
+      const updated = await tx.vendor.update({
+        where: { id: vendorId },
+        data: {
+          login: payload.login === undefined ? undefined : payload.login,
+          passwordHash:
+            passwordHashUpdate === undefined ? undefined : passwordHashUpdate,
+          name: payload.name,
+          description: payload.description === undefined ? undefined : payload.description,
+          ownerFullName:
+            payload.owner_full_name === undefined ? undefined : payload.owner_full_name,
+          phone1: resolvedPhone1,
+          phone2: payload.phone2 === undefined ? undefined : payload.phone2,
+          phone3: payload.phone3 === undefined ? undefined : payload.phone3,
+          email: payload.email === undefined ? undefined : payload.email,
+          phone: resolvedPhone1 === undefined ? undefined : resolvedPhone1,
+          inn: payload.inn === undefined ? undefined : payload.inn,
+          category: payload.category as string | undefined,
+          supportsPickup: payload.supports_pickup,
+          deliversSelf: payload.delivers_self,
+          addressText: payload.address_text === undefined ? undefined : payload.address_text,
+          isActive: payload.is_active,
+          isBlocked: payload.is_blocked === undefined ? undefined : isBlocked,
+          blockedReason:
+            payload.blocked_reason === undefined ? undefined : payload.blocked_reason,
+          blockedAt:
+            payload.is_blocked === undefined
+              ? undefined
+              : isBlocked
+                ? new Date()
+                : null,
+          openingHours:
+            payload.opening_hours === undefined ? undefined : payload.opening_hours,
+          payoutDetails:
+            payload.payout_details === undefined ? undefined : payload.payout_details,
+          mainImageUrl:
+            payload.main_image_url === undefined ? undefined : payload.main_image_url,
+          galleryImages:
+            payload.gallery_images === undefined ? undefined : payload.gallery_images ?? [],
+          timezone:
+            payload.timezone === undefined ? undefined : payload.timezone ?? "Asia/Tashkent",
+          geoLat: payload.geo?.lat === undefined ? undefined : payload.geo.lat,
+          geoLng: payload.geo?.lng === undefined ? undefined : payload.geo.lng,
+        },
+      });
+
+      if (scheduleEntries) {
+        await tx.vendorSchedule.deleteMany({ where: { vendorId: updated.id } });
+        if (scheduleEntries.length > 0) {
+          await tx.vendorSchedule.createMany({
+            data: scheduleEntries.map((entry) => ({
+              vendorId: updated.id,
+              weekday: entry.weekday,
+              openTime: entry.openTime,
+              closeTime: entry.closeTime,
+              closed: entry.closed,
+              is24h: entry.is24h,
+            })),
+          });
+        }
+      }
+
+      return updated;
     });
 
     return reply.send({
@@ -3212,13 +4174,20 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       phone3: vendor.phone3,
       email: vendor.email,
       phone: vendor.phone,
+      login: vendor.login,
       inn: vendor.inn,
       category: vendor.category,
       supports_pickup: vendor.supportsPickup,
       address_text: vendor.addressText,
       is_active: vendor.isActive,
+      is_blocked: vendor.isBlocked,
+      blocked_reason: vendor.blockedReason,
+      blocked_at: vendor.blockedAt,
       opening_hours: vendor.openingHours,
       payout_details: vendor.payoutDetails,
+      main_image_url: vendor.mainImageUrl ?? null,
+      gallery_images: vendor.galleryImages ?? [],
+      timezone: vendor.timezone,
       geo: { lat: vendor.geoLat, lng: vendor.geoLng },
       created_at: vendor.createdAt,
     });
@@ -3257,7 +4226,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
           ? { name: { contains: query.vendor_name, mode: "insensitive" } }
           : undefined,
       },
-      include: { vendor: true },
+      include: { vendor: true, courier: { select: { id: true, fullName: true } } },
       orderBy: { createdAt: "desc" },
     });
 
@@ -3269,6 +4238,10 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         vendor_name: order.vendor?.name ?? null,
         client_id: order.clientId ?? null,
         courier_id: order.courierId ?? null,
+        courier:
+          order.courierId
+            ? { id: order.courierId, full_name: order.courier?.fullName ?? null }
+            : null,
         fulfillment_type: order.fulfillmentType,
         items_subtotal: order.itemsSubtotal,
         total: order.total,
@@ -3290,7 +4263,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const orderId = (request.params as { orderId: string }).orderId;
     const order = await (prisma as PrismaClient).order.findUnique({
       where: { id: orderId },
-      include: { items: { include: { menuItem: true } }, events: true, tracking: true, rating: true },
+      include: {
+        items: { include: { menuItem: true } },
+        events: true,
+        tracking: true,
+        rating: true,
+        vendor: true,
+        courier: { select: { id: true, fullName: true } },
+      },
     });
     if (!order) {
       return reply.status(404).send({ message: "order not found" });
@@ -3300,8 +4280,14 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       order_id: order.id,
       status: order.status,
       vendor_id: order.vendorId,
+      vendor_name: order.vendor?.name ?? null,
+      delivers_self: order.vendor?.deliversSelf ?? false,
       client_id: order.clientId,
       courier_id: order.courierId,
+      courier:
+        order.courierId
+          ? { id: order.courierId, full_name: order.courier?.fullName ?? null }
+          : null,
       fulfillment_type: order.fulfillmentType,
       delivery_location:
         order.deliveryLat !== null && order.deliveryLng !== null
@@ -3385,13 +4371,11 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     }
 
     const nextStatus = payload.status ? (payload.status as OrderStatus) : null;
-    if (nextStatus && !canTransition(order.status, nextStatus, order.fulfillmentType)) {
-      return reply
-        .status(409)
-        .send({ message: `Invalid transition ${order.status} -> ${nextStatus}` });
+    if (nextStatus && !Object.values(OrderStatus).includes(nextStatus)) {
+      return reply.status(400).send({ message: "status is invalid" });
     }
 
-    let pickupCode: string | null = null;
+    let handoffCode: string | null = null;
     const updates: Record<string, unknown> = {
       deliveryComment:
         payload.delivery_comment === undefined ? undefined : payload.delivery_comment,
@@ -3407,10 +4391,16 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         nextStatus === OrderStatus.READY &&
         order.fulfillmentType === FulfillmentType.DELIVERY
       ) {
-        pickupCode = generateNumericCode();
-        const pickupHash = hashCode(pickupCode);
-        updates.pickupCodeHash = pickupHash.hash;
-        updates.pickupCodeSalt = pickupHash.salt;
+        const vendor = await (prisma as PrismaClient).vendor.findUnique({
+          where: { id: order.vendorId },
+          select: { deliversSelf: true },
+        });
+        if (!vendor?.deliversSelf) {
+          handoffCode = generateNumericCode();
+          const pickupHash = hashCode(handoffCode);
+          updates.pickupCodeHash = pickupHash.hash;
+          updates.pickupCodeSalt = pickupHash.salt;
+        }
       }
     }
 
@@ -3422,7 +4412,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     return reply.send({
       order_id: updated.id,
       status: updated.status,
-      pickup_code: pickupCode,
+      handoff_code: handoffCode,
     });
   });
 
@@ -3620,6 +4610,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
             phone: client.phone,
             telegram_username: client.telegramUsername,
             about: client.about,
+            birth_date: client.birthDate ?? null,
+            avatar_url: client.avatarUrl ?? null,
+            avatar_file_id: client.avatarFileId ?? null,
           }
         : null,
       addresses: addresses.map((entry) => ({
@@ -3803,10 +4796,12 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         gross_earnings: number;
         full_name: string | null;
         phone: string | null;
+        login: string | null;
         telegram_username: string | null;
         delivery_method: string | null;
         is_available: boolean | null;
         max_active_orders: number | null;
+        is_blocked: boolean | null;
       }
     >();
 
@@ -3820,10 +4815,12 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         gross_earnings: 0,
         full_name: courier.fullName ?? null,
         phone: courier.phone ?? null,
+        login: courier.login ?? null,
         telegram_username: courier.telegramUsername ?? null,
         delivery_method: courier.deliveryMethod ?? null,
         is_available: courier.isAvailable ?? null,
         max_active_orders: courier.maxActiveOrders ?? null,
+        is_blocked: courier.isBlocked ?? null,
       });
     }
 
@@ -3839,16 +4836,22 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         gross_earnings: 0,
         full_name: null,
         phone: null,
+        login: null,
         telegram_username: null,
         delivery_method: null,
         is_available: null,
         max_active_orders: null,
+        is_blocked: null,
       };
-      if (order.status === OrderStatus.DELIVERED) {
+      if (order.status === OrderStatus.DELIVERED || order.status === OrderStatus.COMPLETED) {
         entry.delivered_count += 1;
         entry.gross_earnings += order.deliveryFee;
       }
-      if (order.status === OrderStatus.COURIER_ACCEPTED || order.status === OrderStatus.PICKED_UP) {
+        if (
+          order.status === OrderStatus.READY ||
+          order.status === OrderStatus.HANDOFF_CONFIRMED ||
+          order.status === OrderStatus.PICKED_UP
+        ) {
         entry.active_status = order.status;
       }
       courierMap.set(order.courierId, entry);
@@ -3866,40 +4869,62 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const payload = request.body as {
       courier_id?: string;
+      login?: string | null;
+      password?: string | null;
       full_name?: string | null;
       phone?: string | null;
       telegram_username?: string | null;
       photo_url?: string | null;
+      avatar_url?: string | null;
       delivery_method?: DeliveryMethod | string | null;
       is_available?: boolean;
       max_active_orders?: number;
+      is_blocked?: boolean;
+      blocked_reason?: string | null;
     };
 
-    if (!payload.courier_id) {
-      return reply.status(400).send({ message: "courier_id is required" });
+    const courierId = payload.courier_id ?? crypto.randomUUID();
+
+    let passwordHash: string | null = null;
+    if (payload.login || payload.password) {
+      if (!payload.login || !payload.password) {
+        return reply.status(400).send({ message: "login and password are required" });
+      }
+      passwordHash = await hashPassword(payload.password);
     }
 
     const courier = await (prisma as PrismaClient).courier.create({
       data: {
-        id: payload.courier_id,
+        id: courierId,
+        login: payload.login ?? null,
+        passwordHash,
         fullName: payload.full_name ?? null,
         phone: payload.phone ?? null,
         telegramUsername: payload.telegram_username ?? null,
         photoUrl: payload.photo_url ?? null,
+        avatarUrl: payload.avatar_url ?? null,
         deliveryMethod: payload.delivery_method as DeliveryMethod | null,
         isAvailable: payload.is_available ?? true,
         maxActiveOrders: payload.max_active_orders ?? 1,
+        isBlocked: payload.is_blocked ?? false,
+        blockedReason: payload.blocked_reason ?? null,
+        blockedAt: payload.is_blocked ? new Date() : null,
       },
     });
 
     return reply.status(201).send({
       courier_id: courier.id,
+      login: courier.login,
       full_name: courier.fullName,
       phone: courier.phone,
       telegram_username: courier.telegramUsername,
+      avatar_url: courier.avatarUrl ?? courier.photoUrl ?? null,
       delivery_method: courier.deliveryMethod,
       is_available: courier.isAvailable,
       max_active_orders: courier.maxActiveOrders,
+      is_blocked: courier.isBlocked,
+      blocked_reason: courier.blockedReason,
+      blocked_at: courier.blockedAt,
       delivered_count: 0,
       gross_earnings: 0,
       average_per_order: 0,
@@ -3931,25 +4956,37 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       }),
     ]);
 
-    const deliveredCount = orders.filter((order) => order.status === OrderStatus.DELIVERED).length;
+    const deliveredCount = orders.filter(
+      (order) => order.status === OrderStatus.DELIVERED || order.status === OrderStatus.COMPLETED,
+    ).length;
     const grossEarnings = orders.reduce(
-      (sum, order) => (order.status === OrderStatus.DELIVERED ? sum + order.deliveryFee : sum),
+      (sum, order) =>
+        order.status === OrderStatus.DELIVERED || order.status === OrderStatus.COMPLETED
+          ? sum + order.deliveryFee
+          : sum,
       0,
     );
     const active = orders.find(
       (order) =>
-        order.status === OrderStatus.COURIER_ACCEPTED || order.status === OrderStatus.PICKED_UP,
+        order.status === OrderStatus.READY ||
+        order.status === OrderStatus.HANDOFF_CONFIRMED ||
+        order.status === OrderStatus.PICKED_UP,
     );
 
     return reply.send({
       courier_id: courierId,
+      login: courier?.login ?? null,
       full_name: courier?.fullName ?? null,
       phone: courier?.phone ?? null,
       telegram_username: courier?.telegramUsername ?? null,
-      photo_url: courier?.photoUrl ?? null,
+      avatar_url: courier?.avatarUrl ?? courier?.photoUrl ?? null,
       delivery_method: courier?.deliveryMethod ?? null,
       is_available: courier?.isAvailable ?? null,
       max_active_orders: courier?.maxActiveOrders ?? null,
+      is_blocked: courier?.isBlocked ?? null,
+      blocked_reason: courier?.blockedReason ?? null,
+      blocked_at: courier?.blockedAt ?? null,
+      created_at: courier?.createdAt ?? null,
       delivered_count: deliveredCount,
       gross_earnings: grossEarnings,
       average_per_order: deliveredCount > 0 ? Math.floor(grossEarnings / deliveredCount) : 0,
@@ -3984,23 +5021,40 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
 
     const courierId = (request.params as { courierId: string }).courierId;
     const payload = request.body as {
+      login?: string | null;
+      password?: string | null;
       full_name?: string | null;
       phone?: string | null;
       telegram_username?: string | null;
       photo_url?: string | null;
+      avatar_url?: string | null;
       delivery_method?: DeliveryMethod | string | null;
       is_available?: boolean;
       max_active_orders?: number;
+      is_blocked?: boolean;
+      blocked_reason?: string | null;
     };
+
+    let passwordHashUpdate: string | undefined;
+    if (payload.login !== undefined || payload.password !== undefined) {
+      if (!payload.login || !payload.password) {
+        return reply.status(400).send({ message: "login and password are required" });
+      }
+      passwordHashUpdate = await hashPassword(payload.password);
+    }
 
     const courier = await (prisma as PrismaClient).courier.update({
       where: { id: courierId },
       data: {
+        login: payload.login === undefined ? undefined : payload.login,
+        passwordHash:
+          passwordHashUpdate === undefined ? undefined : passwordHashUpdate,
         fullName: payload.full_name === undefined ? undefined : payload.full_name,
         phone: payload.phone === undefined ? undefined : payload.phone,
         telegramUsername:
           payload.telegram_username === undefined ? undefined : payload.telegram_username,
         photoUrl: payload.photo_url === undefined ? undefined : payload.photo_url,
+        avatarUrl: payload.avatar_url === undefined ? undefined : payload.avatar_url,
         deliveryMethod:
           payload.delivery_method === undefined
             ? undefined
@@ -4008,17 +5062,31 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
         isAvailable: payload.is_available === undefined ? undefined : payload.is_available,
         maxActiveOrders:
           payload.max_active_orders === undefined ? undefined : payload.max_active_orders,
+        isBlocked: payload.is_blocked === undefined ? undefined : payload.is_blocked ?? false,
+        blockedReason:
+          payload.blocked_reason === undefined ? undefined : payload.blocked_reason,
+        blockedAt:
+          payload.is_blocked === undefined
+            ? undefined
+            : payload.is_blocked
+              ? new Date()
+              : null,
       },
     });
 
     return reply.send({
       courier_id: courier.id,
+      login: courier.login,
       full_name: courier.fullName,
       phone: courier.phone,
       telegram_username: courier.telegramUsername,
+      avatar_url: courier.avatarUrl ?? courier.photoUrl ?? null,
       delivery_method: courier.deliveryMethod,
       is_available: courier.isAvailable,
       max_active_orders: courier.maxActiveOrders,
+      is_blocked: courier.isBlocked,
+      blocked_reason: courier.blockedReason,
+      blocked_at: courier.blockedAt,
     });
   });
 
@@ -4061,7 +5129,9 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       where: { courierId, createdAt: { gte: range.from, lte: range.to } },
     });
 
-    const delivered = orders.filter((order) => order.status === OrderStatus.DELIVERED);
+    const delivered = orders.filter(
+      (order) => order.status === OrderStatus.DELIVERED || order.status === OrderStatus.COMPLETED,
+    );
     const gross = delivered.reduce((sum, order) => sum + order.deliveryFee, 0);
     const count = delivered.length;
     return reply.send({
@@ -4219,7 +5289,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
     const orders = await (prisma as PrismaClient).order.findMany({
       where: {
         vendorId,
-        status: OrderStatus.DELIVERED,
+        status: { in: [OrderStatus.DELIVERED, OrderStatus.COMPLETED] },
         createdAt: { gte: start },
       },
       orderBy: { createdAt: "desc" },
@@ -4249,7 +5319,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
       (prisma as PrismaClient).order.findMany({
         where: {
           vendorId,
-          status: OrderStatus.DELIVERED,
+          status: { in: [OrderStatus.DELIVERED, OrderStatus.COMPLETED] },
           createdAt: { gte: range.from, lte: range.to },
         },
         orderBy: { createdAt: "desc" },
@@ -4609,7 +5679,7 @@ export function buildServer(options: BuildServerOptions = {}): FastifyInstance {
   });
 
   app.addHook("onClose", async () => {
-    if (prisma) {
+    if (prisma && shouldDisconnect) {
       await prisma.$disconnect();
     }
   });
@@ -4637,6 +5707,10 @@ function readRole(request: { headers: Record<string, string | string[] | undefin
     if (devUser === "vendor") {
       return "VENDOR";
     }
+  }
+  const auth = getAuthFromHeaders({ authorization: readHeader(request, "authorization") });
+  if (auth?.role) {
+    return auth.role;
   }
   const raw = readHeader(request, "x-role");
   if (raw === "ADMIN" || raw === "CLIENT" || raw === "COURIER" || raw === "VENDOR") {
@@ -4673,6 +5747,10 @@ function resolveClientId(
   if (DEV_MODE && devUser === "client") {
     return DEV_CLIENT_ID;
   }
+  const auth = getAuthFromHeaders({ authorization: readHeader(request, "authorization") });
+  if (auth?.role === "CLIENT") {
+    return auth.clientId ?? auth.sub;
+  }
   const initData = readHeader(request, "x-telegram-init-data");
   const tgId = parseTelegramUserId(initData);
   if (tgId) {
@@ -4691,20 +5769,33 @@ function resolveCourierId(
   request: { headers: Record<string, string | string[] | undefined> },
   role: Role,
 ): string | null {
-  const devUser = readHeader(request, DEV_USER_HEADER);
-  if (DEV_MODE && devUser === "courier") {
-    return DEV_COURIER_ID;
-  }
-  const initData = readHeader(request, "x-telegram-init-data");
-  const tgId = parseTelegramUserId(initData);
-  if (tgId) {
-    return tgId;
+  const auth = getAuthFromHeaders({ authorization: readHeader(request, "authorization") });
+  if (auth?.role === "COURIER") {
+    return auth.courierId ?? auth.sub;
   }
   if (role === "ADMIN") {
     return readHeader(request, "x-courier-id") ?? null;
   }
+  return null;
+}
+
+function resolveVendorId(
+  request: { headers: Record<string, string | string[] | undefined> },
+  role: Role,
+): string | null {
+  const devUser = readHeader(request, DEV_USER_HEADER);
+  if (DEV_MODE && devUser === "vendor") {
+    return readHeader(request, "x-vendor-id") ?? DEV_VENDOR_ID;
+  }
+  const auth = getAuthFromHeaders({ authorization: readHeader(request, "authorization") });
+  if (auth?.role === "VENDOR") {
+    return auth.vendorId ?? auth.sub;
+  }
+  if (role === "ADMIN") {
+    return readHeader(request, "x-vendor-id") ?? null;
+  }
   if (DEV_MODE) {
-    return DEV_COURIER_ID;
+    return readHeader(request, "x-vendor-id") ?? DEV_VENDOR_ID;
   }
   return null;
 }
@@ -4722,6 +5813,78 @@ function normalizePromoCode(code: string | null | undefined): string | null {
   }
   const normalized = code.trim().toUpperCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+function mapScheduleEntry(entry: {
+  weekday: string;
+  openTime: string | null;
+  closeTime: string | null;
+  closed: boolean;
+  is24h: boolean;
+}): VendorScheduleEntry {
+  return {
+    weekday: entry.weekday as VendorScheduleEntry["weekday"],
+    openTime: entry.openTime,
+    closeTime: entry.closeTime,
+    closed: entry.closed,
+    is24h: entry.is24h,
+  };
+}
+
+function normalizeScheduleInput(
+  input: unknown,
+): Array<{
+  weekday: VendorScheduleEntry["weekday"];
+  openTime: string | null;
+  closeTime: string | null;
+  closed: boolean;
+  is24h: boolean;
+}> | null {
+  if (!Array.isArray(input)) {
+    return null;
+  }
+  const result: Array<{
+    weekday: VendorScheduleEntry["weekday"];
+    openTime: string | null;
+    closeTime: string | null;
+    closed: boolean;
+    is24h: boolean;
+  }> = [];
+  for (const item of input) {
+    if (!item || typeof item !== "object") {
+      return null;
+    }
+    const payload = item as {
+      weekday?: string;
+      open_time?: string | null;
+      close_time?: string | null;
+      closed?: boolean;
+      is24h?: boolean;
+    };
+    if (!payload.weekday) {
+      return null;
+    }
+    const weekday = payload.weekday.toUpperCase() as VendorScheduleEntry["weekday"];
+    if (!["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"].includes(weekday)) {
+      return null;
+    }
+    result.push({
+      weekday,
+      openTime: payload.open_time ?? null,
+      closeTime: payload.close_time ?? null,
+      closed: payload.closed ?? false,
+      is24h: payload.is24h ?? false,
+    });
+  }
+  return result;
+}
+
+function computeVendorOpenState(
+  schedule: VendorScheduleEntry[],
+  timezone: string,
+  now: Date = new Date(),
+) {
+  return computeVendorScheduleInfo(schedule, timezone, now);
 }
 
 function isPromoCodeActive(promo: {
@@ -4799,6 +5962,8 @@ function mapOrderSummary(order: {
   id: string;
   status: string;
   vendorId: string;
+  courierId?: string | null;
+  courier?: { id: string; fullName: string | null } | null;
   fulfillmentType: string;
   deliveryLat: number | null;
   deliveryLng: number | null;
@@ -4823,6 +5988,14 @@ function mapOrderSummary(order: {
     order_id: order.id,
     status: order.status,
     vendor_id: order.vendorId,
+    courier_id: order.courierId ?? null,
+    courier:
+      order.courierId
+        ? {
+            id: order.courierId,
+            full_name: order.courier?.fullName ?? null,
+          }
+        : null,
     fulfillment_type: order.fulfillmentType,
     delivery_location:
       order.deliveryLat !== null && order.deliveryLng !== null

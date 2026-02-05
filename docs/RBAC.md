@@ -53,7 +53,7 @@ Permissions:
 - View available orders (unassigned)
 - Accept orders
 - Update delivery states:
-  - COURIER_ACCEPTED → PICKED_UP → DELIVERED
+  - READY → HANDOFF_CONFIRMED → PICKED_UP → DELIVERED
 - Submit location updates for active orders
 - View own balance, rating, history
 - Cannot cancel orders

@@ -13,7 +13,9 @@ type VendorLike = {
 } | null;
 
 export function computeVendorDashboard(orders: OrderLike[], vendor: VendorLike, days: number) {
-  const delivered = orders.filter((order) => order.status === OrderStatus.DELIVERED);
+  const delivered = orders.filter(
+    (order) => order.status === OrderStatus.DELIVERED || order.status === OrderStatus.COMPLETED,
+  );
   const revenue = delivered.reduce((sum, order) => sum + order.total, 0);
   const serviceFeeTotal = delivered.reduce((sum, order) => sum + order.serviceFee, 0);
   const completedCount = delivered.length;

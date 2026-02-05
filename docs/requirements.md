@@ -93,7 +93,7 @@
 | Track | States | Notes |
 | --- | --- | --- |
 | Vendor | NEW → ACCEPTED → COOKING → READY | Vendor-driven preparation flow. |
-| Courier | COURIER_ACCEPTED → PICKED_UP → DELIVERED | Courier-driven delivery flow. |
-| Pickup | READY_FOR_PICKUP → PICKED_UP_BY_CUSTOMER | Applies only to pickup orders. |
+| Delivery | READY → HANDOFF_CONFIRMED → PICKED_UP → DELIVERED → COMPLETED | Courier confirms handoff, then delivery code completes delivery. |
+| Pickup | READY → HANDOFF_CONFIRMED → COMPLETED | Vendor confirms pickup code; no courier assigned. |
 | Cancel | CANCELLED | Admin can cancel anytime. Vendor can cancel only **before acceptance** (ASSUMPTION). |
 

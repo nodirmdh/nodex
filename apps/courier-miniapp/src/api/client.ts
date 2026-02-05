@@ -1,4 +1,3 @@
-import { getTelegramInitData, parseTelegramUserId } from "../telegram";
 import type {
   AvailableOrder,
   CourierBalance,
@@ -8,20 +7,29 @@ import type {
 } from "./types";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
-const DEV_MODE =
-  import.meta.env.VITE_DEV_MODE === "true" || import.meta.env.VITE_DEV_MODE === "1";
-const DEV_COURIER_ID = import.meta.env.VITE_DEV_COURIER_ID ?? "dev-courier-1";
+const TOKEN_KEY = "nodex_courier_token";
+
+export function getCourierToken() {
+  return window.localStorage.getItem(TOKEN_KEY);
+}
+
+export function setCourierToken(token: string | null) {
+  if (token) {
+    window.localStorage.setItem(TOKEN_KEY, token);
+  } else {
+    window.localStorage.removeItem(TOKEN_KEY);
+  }
+}
 
 function buildHeaders() {
-  const initData = getTelegramInitData();
-  const tgUserId = parseTelegramUserId(initData);
-  const courierId = tgUserId ?? (DEV_MODE ? DEV_COURIER_ID : "");
+  const token = getCourierToken();
 
   const headers: Record<string, string> = {
-    ...(DEV_MODE ? { "x-dev-user": "courier" } : { "x-role": "COURIER" }),
-    "x-courier-id": courierId,
-    ...(initData ? { "x-telegram-init-data": initData } : {}),
+    "x-role": "COURIER",
   };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
   return headers;
 }
 
@@ -53,6 +61,46 @@ export async function listAvailableOrders(): Promise<AvailableOrder[]> {
   return data.orders;
 }
 
+export async function uploadFile(file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+  const headers = buildHeaders();
+  const response = await fetch(`${API_URL}/files/upload`, {
+    method: "POST",
+    headers,
+    body: formData,
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const message = typeof body.message === "string" ? body.message : "Upload failed";
+    throw new Error(message);
+  }
+  return response.json() as Promise<{ file_id: string; public_url: string }>;
+}
+
+export async function loginCourier(payload: { login?: string; phone?: string; password: string }) {
+  const response = await fetch(`${API_URL}/courier/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    const message = typeof body.message === "string" ? body.message : "Request failed";
+    throw new Error(message);
+  }
+
+  const data = (await response.json()) as {
+    token: string;
+    courier_id: string;
+    full_name: string | null;
+    phone: string | null;
+  };
+  setCourierToken(data.token);
+  return data;
+}
+
 export async function acceptOrder(orderId: string) {
   return request<{ order_id: string; status: string }>(`/courier/orders/${orderId}/accept`, {
     method: "POST",
@@ -67,6 +115,19 @@ export async function submitPickup(orderId: string, code: string) {
   return request<{ order_id: string; status: string }>(`/courier/orders/${orderId}/pickup`, {
     method: "POST",
     body: JSON.stringify({ pickup_code: code }),
+  });
+}
+
+export async function submitHandoff(orderId: string, code: string) {
+  return request<{ order_id: string; status: string }>(`/courier/orders/${orderId}/handoff`, {
+    method: "POST",
+    body: JSON.stringify({ handoff_code: code }),
+  });
+}
+
+export async function confirmPickup(orderId: string) {
+  return request<{ order_id: string; status: string }>(`/courier/orders/${orderId}/pickup`, {
+    method: "POST",
   });
 }
 

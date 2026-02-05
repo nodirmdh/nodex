@@ -1,7 +1,21 @@
 ﻿
 import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_CENTER_QONIRAT, DEFAULT_ZOOM, haversineKm, NavigationMap } from "@nodex/navigation";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Input,
+  Skeleton,
+  StatusBadge,
+  Textarea,
+  toast,
+} from "@nodex/ui";
+import { ClipboardList, Home, ShoppingCart, User } from "lucide-react";
 import { MapContainer, Marker, TileLayer, useMapEvents } from "react-leaflet";
+import { useTranslation } from "react-i18next";
+import { LANGUAGES, formatCurrency, formatDateTime, formatNumber, getLanguage, setLanguage, translateFulfillment, translatePayment } from "@nodex/i18n";
 
 import {
   addAddress,
@@ -10,9 +24,11 @@ import {
   createQuote,
   getOrder,
   getOrderRating,
+  getClientToken,
   getProfile,
   getTracking,
   getVendor,
+  loginClient,
   listAddresses,
   listCategories,
   listOrders,
@@ -20,7 +36,10 @@ import {
   listVendors,
   removeAddress,
   removePromoCode,
+  registerClient,
   submitOrderRating,
+  telegramLogin,
+  setClientToken,
   updateProfile,
 } from "./api/client";
 import type {
@@ -36,6 +55,7 @@ import type {
 } from "./api/types";
 import { useLocalStorage } from "./hooks/useLocalStorage";
 import { getTelegramWebApp, openTelegramSupport } from "./telegram";
+import { resolveAssetUrl } from "./utils/resolveAssetUrl";
 
 type Screen = "home" | "vendor" | "cart" | "address" | "checkout" | "orders" | "orderDetails" | "profile";
 
@@ -111,6 +131,7 @@ const emptyCheckout: CheckoutState = {
 const MAX_CLIENT_DISTANCE_KM = 30;
 
 export function App() {
+  const { t } = useTranslation();
   const [screen, setScreen] = useState<Screen>("home");
   const [profileTab, setProfileTab] = useState<ProfileTab>("account");
   const [vendors, setVendors] = useState<VendorSummary[]>([]);
@@ -143,9 +164,33 @@ export function App() {
     "nodex_client_delivery_code",
     null,
   );
+  const [pickupCode, setPickupCode] = useLocalStorage<string | null>(
+    "nodex_client_pickup_code",
+    null,
+  );
   const [tracking, setTracking] = useState<{ lat: number; lng: number } | null>(null);
   const [trackingUpdatedAt, setTrackingUpdatedAt] = useState<string | null>(null);
+
+  const translateBadge = (badge: string) => {
+    if (badge === "Promo code available") {
+      return t("common.promoCodeAvailable");
+    }
+    if (badge === "Gift") {
+      return t("promo.gift");
+    }
+    return badge;
+  };
   const [profile, setProfile] = useState<ClientProfile | null>(null);
+  const [authToken, setAuthTokenState] = useState<string | null>(getClientToken());
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [loginForm, setLoginForm] = useState({ phone: "+998", password: "" });
+  const [registerForm, setRegisterForm] = useState({
+    full_name: "",
+    birth_date: "",
+    phone: "+998",
+    password: "",
+  });
   const [ratingDraft, setRatingDraft] = useState<RatingDraft>({
     vendorStars: 5,
     vendorComment: "",
@@ -160,9 +205,21 @@ export function App() {
     entrance: "",
     apartment: "",
   });
+
+  const setAuthToken = (token: string | null) => {
+    setClientToken(token);
+    setAuthTokenState(token);
+  };
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [showMap, setShowMap] = useState(false);
+
+  useEffect(() => {
+    document.body.classList.toggle("modal-open", showMap);
+    return () => {
+      document.body.classList.remove("modal-open");
+    };
+  }, [showMap]);
 
   const supportLink = useMemo(() => {
     const direct = import.meta.env.VITE_SUPPORT_TG_LINK as string | undefined;
@@ -182,6 +239,12 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    if (error) {
+      toast.error(error);
+    }
+  }, [error]);
+
+  useEffect(() => {
     if (!activeOrderId) {
       return;
     }
@@ -199,7 +262,7 @@ export function App() {
       setVendors(vendorsData);
       setCategories(["All", ...categoriesData]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load vendors");
+      setError(err instanceof Error ? err.message : t("errors.loadVendors"));
     } finally {
       setIsLoading(false);
     }
@@ -222,7 +285,7 @@ export function App() {
       setExpandedItems({});
       setScreen("vendor");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load vendor");
+      setError(err instanceof Error ? err.message : t("errors.loadVendor"));
     } finally {
       setIsLoading(false);
     }
@@ -237,18 +300,19 @@ export function App() {
         "ACCEPTED",
         "COOKING",
         "READY",
-        "COURIER_ACCEPTED",
+        "HANDOFF_CONFIRMED",
         "PICKED_UP",
-        "READY_FOR_PICKUP",
       ];
       const [activeData, historyData] = await Promise.all([
         listOrders({ status: activeStatuses.join(",") }),
-        listOrders({ status: "DELIVERED,CANCELLED,CANCELLED_BY_VENDOR,PICKED_UP_BY_CUSTOMER" }),
+        listOrders({
+          status: "DELIVERED,COMPLETED,CANCELLED,CANCELLED_BY_VENDOR,PICKED_UP_BY_CUSTOMER",
+        }),
       ]);
       setOrders(activeData.orders);
       setOrdersHistory(historyData.orders);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load orders");
+      setError(err instanceof Error ? err.message : t("errors.loadOrders"));
     } finally {
       setIsLoading(false);
     }
@@ -261,7 +325,7 @@ export function App() {
       const data = await getProfile();
       setProfile(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load profile");
+      setError(err instanceof Error ? err.message : t("errors.loadProfile"));
     } finally {
       setIsLoading(false);
     }
@@ -274,13 +338,21 @@ export function App() {
       const data = await listAddresses();
       setSavedAddresses(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load addresses");
+      setError(err instanceof Error ? err.message : t("errors.loadAddresses"));
     } finally {
       setIsLoading(false);
     }
   };
 
   const updateItemQuantity = (itemId: string, delta: number) => {
+    if (
+      delta > 0 &&
+      selectedVendor &&
+      isVendorUnavailable(selectedVendor)
+    ) {
+      setError(vendorUnavailableMessage(selectedVendor));
+      return;
+    }
     setCart((prev) => {
       const next = { ...prev.items };
       const current = next[itemId] ?? 0;
@@ -378,30 +450,30 @@ export function App() {
   const handleCreateQuote = async () => {
     setError(null);
     if (!cart.vendorId) {
-      setError("Select a vendor first.");
+      setError(t("errors.selectVendor"));
       return null;
     }
     if (cartItems.length === 0) {
-      setError("Add items to the cart.");
+      setError(t("errors.addItems"));
       return null;
     }
     if (cart.fulfillmentType === "DELIVERY") {
       if (!checkout.deliveryComment.trim()) {
-        setError("Комментарий курьеру обязателен.");
+        setError(t("errors.deliveryCommentRequired"));
         return null;
       }
       if (address.lat === null || address.lng === null) {
-        setError("Выберите адрес доставки.");
+        setError(t("errors.selectDeliveryAddress"));
         return null;
       }
       if (deliveryTooFar) {
-        setError("Слишком далеко для доставки.");
+        setError(t("errors.deliveryTooFar"));
         return null;
       }
     }
     const normalizedPhone = normalizeUzPhone(checkout.receiverPhone);
     if (!normalizedPhone) {
-      setError("Телефон получателя должен начинаться с +998.");
+      setError(t("errors.phoneFormat"));
       return null;
     }
     setIsLoading(true);
@@ -410,7 +482,7 @@ export function App() {
       setQuote(data);
       return data;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to calculate quote");
+      setError(err instanceof Error ? err.message : t("errors.quoteFailed"));
       return null;
     } finally {
       setIsLoading(false);
@@ -421,21 +493,21 @@ export function App() {
     setError(null);
     if (cart.fulfillmentType === "DELIVERY") {
       if (!checkout.deliveryComment.trim()) {
-        setError("Комментарий курьеру обязателен.");
+        setError(t("errors.deliveryCommentRequired"));
         return;
       }
       if (address.lat === null || address.lng === null) {
-        setError("Выберите адрес доставки.");
+        setError(t("errors.selectDeliveryAddress"));
         return;
       }
       if (deliveryTooFar) {
-        setError("Слишком далеко для доставки.");
+        setError(t("errors.deliveryTooFar"));
         return;
       }
     }
     const normalizedPhone = normalizeUzPhone(checkout.receiverPhone);
     if (!normalizedPhone) {
-      setError("Телефон получателя должен начинаться с +998.");
+      setError(t("errors.phoneFormat"));
       return;
     }
     setIsLoading(true);
@@ -443,13 +515,15 @@ export function App() {
       const data = await createOrder(buildOrderPayload());
       setActiveOrderId(data.order_id);
       setDeliveryCode(data.delivery_code ?? null);
+      setPickupCode(data.pickup_code ?? null);
       setQuote(null);
       setScreen("orders");
       setCart((prev) => ({ ...prev, items: {} }));
       await refreshOrder(data.order_id);
       await loadOrders();
+      toast.success("Заказ создан");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create order");
+      setError(err instanceof Error ? err.message : t("errors.createOrder"));
     } finally {
       setIsLoading(false);
     }
@@ -464,10 +538,15 @@ export function App() {
         getTracking(orderId),
       ]);
       setOrder(orderData);
+      if (orderData.status === "COMPLETED" || orderData.status === "DELIVERED") {
+        setActiveOrderId(null);
+        setDeliveryCode(null);
+        setPickupCode(null);
+      }
       setTracking(trackingData.location);
       setTrackingUpdatedAt(trackingData.updated_at ?? null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load order");
+      setError(err instanceof Error ? err.message : t("errors.loadOrder"));
     } finally {
       setIsLoading(false);
     }
@@ -481,7 +560,11 @@ export function App() {
 
   const goToCart = async () => {
     if (cartItems.length === 0) {
-      setError("Добавьте хотя бы один товар.");
+      setError(t("errors.addItem"));
+      return;
+    }
+    if (selectedVendor && isVendorUnavailable(selectedVendor)) {
+      setError(vendorUnavailableMessage(selectedVendor));
       return;
     }
     setScreen("cart");
@@ -496,7 +579,7 @@ export function App() {
             : null,
       }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load promo codes");
+      setError(err instanceof Error ? err.message : t("errors.loadPromoCodes"));
     }
   };
 
@@ -523,7 +606,11 @@ export function App() {
 
   const goToAddress = () => {
     if (cartItems.length === 0) {
-      setError("Добавьте хотя бы один товар.");
+      setError(t("errors.addItem"));
+      return;
+    }
+    if (selectedVendor && isVendorUnavailable(selectedVendor)) {
+      setError(vendorUnavailableMessage(selectedVendor));
       return;
     }
     setScreen("address");
@@ -532,15 +619,19 @@ export function App() {
 
   const goToCheckout = async () => {
     if (cartItems.length === 0) {
-      setError("Добавьте хотя бы один товар.");
+      setError(t("errors.addItem"));
+      return;
+    }
+    if (selectedVendor && isVendorUnavailable(selectedVendor)) {
+      setError(vendorUnavailableMessage(selectedVendor));
       return;
     }
     if (cart.fulfillmentType === "DELIVERY" && (address.lat === null || address.lng === null)) {
-      setError("Выберите адрес доставки.");
+      setError(t("errors.selectDeliveryAddress"));
       return;
     }
     if (cart.fulfillmentType === "DELIVERY" && deliveryTooFar) {
-      setError("Слишком далеко для доставки.");
+      setError(t("errors.deliveryTooFar"));
       return;
     }
     setScreen("checkout");
@@ -549,7 +640,7 @@ export function App() {
 
   const handleSaveAddress = async () => {
     if (address.lat === null || address.lng === null) {
-      setError("Выберите точку на карте.");
+      setError(t("errors.pickMap"));
       return;
     }
     setIsLoading(true);
@@ -565,7 +656,7 @@ export function App() {
       });
       await loadAddresses();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save address");
+      setError(err instanceof Error ? err.message : t("errors.saveAddress"));
     } finally {
       setIsLoading(false);
     }
@@ -577,19 +668,29 @@ export function App() {
     return `${avg.toFixed(1)} (${count})`;
   };
 
+  const isVendorUnavailable = (vendor?: VendorSummary | VendorDetails | null) => {
+    if (!vendor) return false;
+    return vendor.is_active === false || vendor.is_blocked || vendor.is_open_now === false;
+  };
+
+  const vendorUnavailableMessage = (vendor?: VendorSummary | VendorDetails | null) => {
+    if (!vendor) return t("client.vendorDisabled");
+    return vendor.is_open_now === false ? t("client.vendorClosed") : t("client.vendorDisabled");
+  };
+
   return (
     <div className="app">
       <header className="top-bar">
-        <div className="brand">Nodex Client</div>
+        <div className="brand">{t("client.title")}</div>
         <nav className="tabs">
           <button className={screen === "home" ? "active" : ""} onClick={() => setScreen("home")}>
-            Home
+            <Home size={16} /> {t("nav.home")}
           </button>
           <button className={screen === "cart" ? "active" : ""} onClick={goToCart}>
-            Cart
+            <ShoppingCart size={16} /> {t("nav.cart")}
           </button>
           <button className={screen === "orders" ? "active" : ""} onClick={goToOrders}>
-            Orders
+            <ClipboardList size={16} /> {t("nav.orders")}
           </button>
           <button
             className={screen === "profile" ? "active" : ""}
@@ -601,58 +702,105 @@ export function App() {
               void listPromoCodes().then(setPromoCodes).catch(() => null);
             }}
           >
-            Profile
+            <User size={16} /> {t("nav.profile")}
           </button>
         </nav>
       </header>
 
       {error && <div className="error">{error}</div>}
-      {isLoading && <div className="loading">Loading...</div>}
+      {isLoading && <div className="loading">{t("common.loading")}</div>}
 
       {screen === "home" && (
         <section className="panel">
-          <h2>Home</h2>
-          <div className="tag-list">
+          <div className="category-chips">
             {categories.map((category) => (
               <button
                 key={category}
                 className={selectedCategory === category ? "tag active" : "tag"}
                 onClick={() => setSelectedCategory(category)}
               >
-                {category}
+                {category === "All" ? t("common.all") : t(`category.${category}`)}
               </button>
             ))}
           </div>
           <input
             className="input"
-            placeholder="Search vendors"
+            placeholder={t("client.searchVendors")}
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
           <div className="card-list">
-            {filteredVendors.map((vendor) => (
-              <button
-                key={vendor.vendor_id}
-                className="card"
-                onClick={() => void loadVendor(vendor.vendor_id)}
-              >
-                <div className="card-title">{vendor.name}</div>
-                <div className="card-meta">Category: {vendor.category}</div>
-                <div className="card-meta">Rating: {ratingLabel(vendor)}</div>
-                <div className="tag-list">
-                  {vendor.active_promotions?.length ? (
-                    vendor.active_promotions.map((badge) => (
-                      <span key={badge} className="tag">
-                        {badge}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="muted">No promotions</span>
-                  )}
+            {isLoading ? (
+              Array.from({ length: 3 }).map((_, index) => (
+                <div key={index} className="card">
+                  <Skeleton className="h-32" />
+                  <Skeleton className="h-4" />
+                  <Skeleton className="h-4" />
                 </div>
-              </button>
-            ))}
-            {filteredVendors.length === 0 && <p>No vendors found.</p>}
+              ))
+            ) : (
+              <>
+                {filteredVendors.map((vendor) => (
+                  <button
+                    key={vendor.vendor_id}
+                    className="card"
+                    disabled={vendor.is_active === false || vendor.is_blocked || vendor.is_open_now === false}
+                    onClick={() => {
+                      if (vendor.is_open_now === false) {
+                        setError(t("client.vendorClosed"));
+                        return;
+                      }
+                      if (vendor.is_active === false || vendor.is_blocked) {
+                        setError(t("client.vendorClosed"));
+                        return;
+                      }
+                      void loadVendor(vendor.vendor_id);
+                    }}
+                  >
+                    {vendor.main_image_url ? (
+                      <img
+                        className="card-image"
+                        src={resolveAssetUrl(vendor.main_image_url)}
+                        alt={vendor.name}
+                      />
+                    ) : (
+                      <div className="card-image placeholder" />
+                    )}
+                    <div className="card-title">{vendor.name}</div>
+                    <div className="card-meta">
+                      {t("client.vendorCategory")}: {t(`category.${vendor.category}`)}
+                    </div>
+                    <div className="card-meta">
+                      {t("client.vendorRating")}: {ratingLabel(vendor)}
+                    </div>
+                    <div className="tag-list">
+                      {vendor.is_open_now === false ? (
+                        <span className="tag">{t("client.closedNow")}</span>
+                      ) : (
+                        <span className="tag">{t("client.openNow")}</span>
+                      )}
+                    </div>
+                    {(vendor.is_active === false || vendor.is_blocked) && (
+                      <div className="tag-list">
+                        <span className="tag">{t("client.vendorDisabled")}</span>
+                      </div>
+                    )}
+                    <div className="tag-list">
+                      {vendor.active_promotions?.length ? (
+                        vendor.active_promotions.map((badge) => (
+                          <span key={badge} className="tag">
+                            {translateBadge(badge)}
+                          </span>
+                        ))
+                      ) : (
+                        <span className="muted">{t("client.noPromotions")}</span>
+                      )}
+                    </div>
+                  </button>
+                ))}
+                {filteredVendors.length === 0 && <p>{t("client.noVendorsFound")}</p>}
+              </>
+            )}
           </div>
         </section>
       )}
@@ -660,31 +808,63 @@ export function App() {
       {screen === "vendor" && selectedVendor && (
         <section className="panel">
           <button className="link" onClick={() => setScreen("home")}>
-            Back to Home
+            {t("client.backToHome")}
           </button>
+          {selectedVendor.main_image_url && (
+            <div className="vendor-hero">
+              <img src={resolveAssetUrl(selectedVendor.main_image_url)} alt={selectedVendor.name} />
+              {selectedVendor.gallery_images && selectedVendor.gallery_images.length > 0 && (
+                <div className="vendor-gallery">
+                  {selectedVendor.gallery_images.map((url) => (
+                    <img key={url} src={resolveAssetUrl(url)} alt={selectedVendor.name} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <div className="vendor-header">
             <div>
               <h2>{selectedVendor.name}</h2>
               <p className="muted">{selectedVendor.description ?? ""}</p>
-              <div className="muted">Rating: {ratingLabel(selectedVendor)}</div>
+              <div className="muted">{t("client.vendorRating")}: {ratingLabel(selectedVendor)}</div>
+              {selectedVendor.is_open_now === false && (
+                <div className="error">{t("client.vendorClosed")}</div>
+              )}
+              {(selectedVendor.is_active === false || selectedVendor.is_blocked) && (
+                <div className="error">{t("client.vendorDisabled")}</div>
+              )}
             </div>
             <div className="tag-list">
               {selectedVendor.active_promotions?.length ? (
                 selectedVendor.active_promotions.map((badge) => (
                   <span key={badge} className="tag">
-                    {badge}
+                    {translateBadge(badge)}
                   </span>
                 ))
               ) : (
-                <span className="muted">No promotions</span>
+                <span className="muted">{t("client.noPromotions")}</span>
               )}
             </div>
           </div>
           <div className="card-list">
-            {selectedVendor.menu.filter((item) => item.is_available).map((item) => {
+            {isLoading ? (
+              Array.from({ length: 3 }).map((_, index) => (
+                <div key={index} className="card">
+                  <Skeleton className="h-28" />
+                  <Skeleton className="h-4" />
+                  <Skeleton className="h-4" />
+                </div>
+              ))
+            ) : (
+            selectedVendor.menu.filter((item) => item.is_available).map((item) => {
               const expanded = Boolean(expandedItems[item.menu_item_id]);
               return (
                 <div key={item.menu_item_id} className="card">
+                  {item.image_url ? (
+                    <img className="item-image" src={resolveAssetUrl(item.image_url)} alt={item.title} />
+                  ) : (
+                    <div className="item-image placeholder" />
+                  )}
                   <button
                     className="link"
                     onClick={() =>
@@ -699,13 +879,15 @@ export function App() {
                       <div className="tag-list">
                         {item.promo_badges.map((badge) => (
                           <span key={badge} className="tag">
-                            {badge}
+                            {translateBadge(badge)}
                           </span>
                         ))}
                       </div>
                     ) : null}
                     <div className="card-meta">{formatWeight(item)}</div>
-                    <div className="card-meta">Price: {item.price}</div>
+                    <div className="card-meta">
+                      {t("client.price")}: {formatCurrency(item.price)}
+                    </div>
                   </button>
                   {expanded && <div className="muted">{item.description ?? ""}</div>}
                   <div className="quantity">
@@ -715,64 +897,106 @@ export function App() {
                   </div>
                 </div>
               );
-            })}
+            }))}
           </div>
-          {totals.itemsCount > 0 && (
+          {totals.itemsCount > 0 && !isVendorUnavailable(selectedVendor) && (
             <StickyBar itemsCount={totals.itemsCount} subtotal={totals.subtotal} onNext={goToCart} />
           )}
         </section>
       )}
 
       {screen === "cart" && (
-        <section className="panel">
-          <h2>Cart</h2>
-          {cartItems.length === 0 ? (
-            <p>Your cart is empty.</p>
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">{t("client.cartTitle")}</h2>
+              <p className="text-sm text-slate-500">{t("client.cartSubtitle")}</p>
+            </div>
+            <Button variant="secondary" onClick={() => setScreen("vendor")}>
+              {t("client.continueShopping")}
+            </Button>
+          </div>
+
+          {isLoading ? (
+            <Card>
+              <div className="grid gap-3">
+                <Skeleton className="h-16" />
+                <Skeleton className="h-16" />
+              </div>
+            </Card>
+          ) : cartItems.length === 0 ? (
+            <Card>
+              <EmptyState
+                title={t("client.emptyCartTitle")}
+                description={t("client.emptyCartDescription")}
+              />
+            </Card>
           ) : (
-            <div className="list">
+            <div className="grid gap-3">
               {cartItems.map(({ item, quantity }) => (
-                <div key={item.menu_item_id} className="row">
-                  <div>
-                    <div>{item.title}</div>
-                    <div className="muted">{item.description ?? ""}</div>
-                    <div className="muted">{formatWeight(item)}</div>
-                    <div className="muted">Price: {item.price}</div>
+                <Card key={item.menu_item_id}>
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="text-base font-semibold text-slate-900">{item.title}</div>
+                      {item.description && (
+                        <div className="text-sm text-slate-500">{item.description}</div>
+                      )}
+                      {formatWeight(item) && (
+                        <div className="mt-2">
+                          <Badge variant="info">{formatWeight(item)}</Badge>
+                        </div>
+                      )}
+                      <div className="mt-2 text-sm text-slate-500">
+                        {t("client.price")}: {formatCurrency(item.price)}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button variant="secondary" onClick={() => updateItemQuantity(item.menu_item_id, -1)}>
+                        -
+                      </Button>
+                      <span className="min-w-[24px] text-center font-semibold text-slate-900">
+                        {quantity}
+                      </span>
+                      <Button variant="secondary" onClick={() => updateItemQuantity(item.menu_item_id, 1)}>
+                        +
+                      </Button>
+                    </div>
                   </div>
-                  <div className="quantity">
-                    <button onClick={() => updateItemQuantity(item.menu_item_id, -1)}>-</button>
-                    <span>{quantity}</span>
-                    <button onClick={() => updateItemQuantity(item.menu_item_id, 1)}>+</button>
-                  </div>
-                </div>
+                </Card>
               ))}
             </div>
           )}
 
-          <div className="field">
-            <label>Способ получения</label>
-            <div className="inline">
-              <button
-                className={cart.fulfillmentType === "DELIVERY" ? "tag active" : "tag"}
+          <Card>
+            <div className="text-sm font-semibold text-slate-900">{t("client.fulfillmentType")}</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                variant={cart.fulfillmentType === "DELIVERY" ? "primary" : "secondary"}
                 onClick={() => setCart((prev) => ({ ...prev, fulfillmentType: "DELIVERY" }))}
               >
-                DELIVERY
-              </button>
+                {t("client.delivery")}
+              </Button>
               {canPickup && (
-                <button
-                  className={cart.fulfillmentType === "PICKUP" ? "tag active" : "tag"}
+                <Button
+                  variant={cart.fulfillmentType === "PICKUP" ? "primary" : "secondary"}
                   onClick={() => setCart((prev) => ({ ...prev, fulfillmentType: "PICKUP" }))}
                 >
-                  PICKUP
-                </button>
+                  {t("client.pickup")}
+                </Button>
               )}
             </div>
-          </div>
+            {deliveryTooFar && (
+              <div className="mt-3 text-sm text-rose-600">
+                {t("client.deliveryTooFar")}
+              </div>
+            )}
+          </Card>
 
-          <div className="field">
-            <label>Приборы и салфетки</label>
-            <div className="inline">
-              <button
-                className="secondary"
+          <Card>
+            <div className="text-sm font-semibold text-slate-900">{t("client.utensils")}</div>
+            <div className="mt-3 flex items-center gap-2">
+              <Button
+                variant="secondary"
                 onClick={() =>
                   setCart((prev) => ({
                     ...prev,
@@ -781,10 +1005,12 @@ export function App() {
                 }
               >
                 -
-              </button>
-              <span>{cart.utensilsCount}</span>
-              <button
-                className="secondary"
+              </Button>
+              <span className="min-w-[24px] text-center font-semibold text-slate-900">
+                {cart.utensilsCount}
+              </span>
+              <Button
+                variant="secondary"
                 onClick={() =>
                   setCart((prev) => ({
                     ...prev,
@@ -793,22 +1019,25 @@ export function App() {
                 }
               >
                 +
-              </button>
+              </Button>
             </div>
-          </div>
+            <label className="mt-4 block text-sm text-slate-600">
+              {t("client.vendorComment")}
+              <Textarea
+                value={cart.vendorComment}
+                onChange={(event) =>
+                  setCart((prev) => ({ ...prev, vendorComment: event.target.value }))
+                }
+                className="mt-2"
+              />
+            </label>
+          </Card>
 
-          <div className="field">
-            <label>Комментарий ресторану</label>
-            <textarea
-              className="input"
-              value={cart.vendorComment}
-              onChange={(event) => setCart((prev) => ({ ...prev, vendorComment: event.target.value }))}
-            />
-          </div>
+          <Card>
+            <TotalsBlock quote={quote} subtotal={totals.subtotal} />
+          </Card>
 
-          <TotalsBlock quote={quote} subtotal={totals.subtotal} />
-
-          {totals.itemsCount > 0 && (
+          {totals.itemsCount > 0 && !isVendorUnavailable(selectedVendor) && (
             <StickyBar itemsCount={totals.itemsCount} subtotal={totals.subtotal} onNext={goToAddress} />
           )}
         </section>
@@ -817,9 +1046,8 @@ export function App() {
       {screen === "address" && (
         <section className="panel">
           <button className="link" onClick={() => setScreen("cart")}>
-            Назад
+            {t("common.back")}
           </button>
-          <h2>Адрес доставки</h2>
           <div className="tag-list">
             {(["HOME", "WORK", "OTHER"] as AddressType[]).map((type) => (
               <button
@@ -827,24 +1055,24 @@ export function App() {
                 className={address.type === type ? "tag active" : "tag"}
                 onClick={() => setAddress((prev) => ({ ...prev, type }))}
               >
-                {type}
+                {t(`addressType.${type}`)}
               </button>
             ))}
           </div>
 
           <div className="field">
-            <label>Адрес</label>
+            <label>{t("fields.address")}</label>
             <input
               className="input"
               value={address.addressText}
               onChange={(event) => setAddress((prev) => ({ ...prev, addressText: event.target.value }))}
-              placeholder="Улица, дом"
+              placeholder={t("client.addressPlaceholder")}
             />
           </div>
 
           <div className="grid">
             <label>
-              Улица
+              {t("client.street")}
               <input
                 className="input"
                 value={address.street}
@@ -852,7 +1080,7 @@ export function App() {
               />
             </label>
             <label>
-              Дом
+              {t("client.house")}
               <input
                 className="input"
                 value={address.house}
@@ -860,7 +1088,7 @@ export function App() {
               />
             </label>
             <label>
-              Подъезд
+              {t("client.entrance")}
               <input
                 className="input"
                 value={address.entrance}
@@ -868,7 +1096,7 @@ export function App() {
               />
             </label>
             <label>
-              Квартира
+              {t("client.apartment")}
               <input
                 className="input"
                 value={address.apartment}
@@ -878,10 +1106,10 @@ export function App() {
           </div>
 
           <div className="field">
-            <label>Точка на карте</label>
+            <label>{t("client.mapPoint")}</label>
             <div className="inline">
               <button className="secondary" onClick={() => setShowMap(true)}>
-                Pick on map
+                {t("client.pickOnMap")}
               </button>
               {address.lat !== null && address.lng !== null && (
                 <span className="muted">
@@ -890,13 +1118,15 @@ export function App() {
               )}
             </div>
             {deliveryTooFar && (
-              <div className="error">Слишком далеко (более {MAX_CLIENT_DISTANCE_KM} км).</div>
+              <div className="error">
+                {t("client.tooFarDistance", { km: MAX_CLIENT_DISTANCE_KM })}
+              </div>
             )}
           </div>
 
           {savedAddresses.length > 0 && (
             <div className="list">
-              <div className="muted">Saved addresses</div>
+              <div className="muted">{t("client.savedAddresses")}</div>
               {savedAddresses.map((entry) => (
                 <button
                   key={entry.id}
@@ -924,363 +1154,472 @@ export function App() {
 
           <div className="inline">
             <button className="secondary" onClick={handleSaveAddress}>
-              Сохранить адрес
+              {t("client.saveAddress")}
             </button>
             <button
               className="primary"
               onClick={goToCheckout}
               disabled={
+                isVendorUnavailable(selectedVendor) ||
                 cart.fulfillmentType === "DELIVERY" &&
                 (address.lat === null || address.lng === null || deliveryTooFar)
               }
             >
-              Далее
+              {t("common.continue")}
             </button>
           </div>
         </section>
       )}
       {screen === "checkout" && (
-        <section className="panel">
-          <button className="link" onClick={() => setScreen("address")}>
-            Назад
-          </button>
-          <h2>Оформление</h2>
-
-          <div className="field">
-            <label>Комментарий курьеру</label>
-            <textarea
-              className="input"
-              value={checkout.deliveryComment}
-              onChange={(event) =>
-                setCheckout((prev) => ({ ...prev, deliveryComment: event.target.value }))
-              }
-              placeholder="Инструкции для курьера"
-            />
+        <section className="space-y-4">
+          <Button variant="ghost" onClick={() => setScreen("address")}>
+            {t("common.back")}
+          </Button>
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">{t("client.checkoutTitle")}</h2>
+            <p className="text-sm text-slate-500">{t("client.checkoutSubtitle")}</p>
           </div>
 
-          <div className="field">
-            <label>Телефон получателя</label>
-            <input
-              className="input"
-              value={checkout.receiverPhone}
-              onChange={(event) =>
-                setCheckout((prev) => ({
-                  ...prev,
-                  receiverPhone: sanitizeUzPhoneInput(event.target.value),
-                }))
-              }
-              placeholder="+998XXXXXXXXX"
-            />
-          </div>
+          <Card>
+            <label className="text-sm text-slate-600">
+              {t("client.deliveryComment")}
+              <Textarea
+                value={checkout.deliveryComment}
+                onChange={(event) =>
+                  setCheckout((prev) => ({ ...prev, deliveryComment: event.target.value }))
+                }
+                placeholder={t("client.deliveryCommentPlaceholder")}
+                className="mt-2"
+              />
+            </label>
+          </Card>
 
-          <div className="field">
-            <label>Промокоды</label>
-            <div className="tag-list">
-              <button
-                className={!cart.promoCode ? "tag active" : "tag"}
+          <Card>
+            <label className="text-sm text-slate-600">
+              {t("client.receiverPhone")}
+              <Input
+                value={checkout.receiverPhone}
+                onChange={(event) =>
+                  setCheckout((prev) => ({
+                    ...prev,
+                    receiverPhone: sanitizeUzPhoneInput(event.target.value),
+                  }))
+                }
+                placeholder="+998XXXXXXXXX"
+                className="mt-2"
+              />
+            </label>
+          </Card>
+
+          <Card>
+            <div className="text-sm font-semibold text-slate-900">{t("client.promoCodes")}</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                variant={!cart.promoCode ? "primary" : "secondary"}
                 onClick={() => setCart((prev) => ({ ...prev, promoCode: null }))}
               >
-                Без промокода
-              </button>
+                {t("client.noPromo")}
+              </Button>
               {promoCodes.map((promo) => (
-                <button
+                <Button
                   key={promo.id}
-                  className={cart.promoCode === promo.code ? "tag active" : "tag"}
+                  variant={cart.promoCode === promo.code ? "primary" : "secondary"}
                   onClick={() => setCart((prev) => ({ ...prev, promoCode: promo.code }))}
                   disabled={promo.status && promo.status !== "ACTIVE"}
                 >
                   {promo.code}
-                </button>
+                  {promo.status && promo.status !== "ACTIVE" && (
+                    <span className="text-xs text-slate-400">({promo.status})</span>
+                  )}
+                </Button>
               ))}
-              {promoCodes.length === 0 && <span className="muted">Нет сохраненных промокодов</span>}
-            </div>
-            <PromoCodeForm
-              value={checkout.manualPromo}
-              onChange={(value) => setCheckout((prev) => ({ ...prev, manualPromo: value }))}
-              onAdd={async (value) => {
-                setIsLoading(true);
-                setError(null);
-                try {
-                  const entry = await addPromoCode(value);
-                  setPromoCodes((prev) => [entry, ...prev]);
-                  setCheckout((prev) => ({ ...prev, manualPromo: "" }));
-                  setCart((prev) => ({ ...prev, promoCode: entry.code }));
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : "Failed to add promo code");
-                } finally {
-                  setIsLoading(false);
-                }
-              }}
-            />
-          </div>
-
-          <div className="field">
-            <label>Оплата</label>
-            <div className="inline">
-              <button
-                className={checkout.paymentMethod === "CARD" ? "tag active" : "tag"}
-                onClick={() => setCheckout((prev) => ({ ...prev, paymentMethod: "CARD" }))}
-              >
-                CARD
-              </button>
-              <button
-                className={checkout.paymentMethod === "CASH" ? "tag active" : "tag"}
-                onClick={() => setCheckout((prev) => ({ ...prev, paymentMethod: "CASH" }))}
-              >
-                CASH
-              </button>
-            </div>
-          </div>
-
-          {checkout.paymentMethod === "CASH" && (
-            <div className="field">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={checkout.changeRequired}
-                  onChange={(event) =>
-                    setCheckout((prev) => ({ ...prev, changeRequired: event.target.checked }))
-                  }
-                />
-                Требуется сдача?
-              </label>
-              {checkout.changeRequired && (
-                <input
-                  className="input"
-                  value={checkout.changeForAmount}
-                  onChange={(event) =>
-                    setCheckout((prev) => ({ ...prev, changeForAmount: event.target.value }))
-                  }
-                  placeholder="Сдача с суммы"
-                />
+              {promoCodes.length === 0 && (
+                <span className="text-sm text-slate-400">{t("client.noSavedPromo")}</span>
               )}
             </div>
-          )}
+            <div className="mt-4">
+              <PromoCodeForm
+                value={checkout.manualPromo}
+                onChange={(value) => setCheckout((prev) => ({ ...prev, manualPromo: value }))}
+                onAdd={async (value) => {
+                  setIsLoading(true);
+                  setError(null);
+                  try {
+                    const entry = await addPromoCode(value);
+                    setPromoCodes((prev) => [entry, ...prev]);
+                    setCheckout((prev) => ({ ...prev, manualPromo: "" }));
+                    setCart((prev) => ({ ...prev, promoCode: entry.code }));
+                  } catch (err) {
+                  setError(err instanceof Error ? err.message : t("errors.addPromo"));
+                  } finally {
+                    setIsLoading(false);
+                  }
+                }}
+              />
+            </div>
+          </Card>
 
-          <TotalsBlock quote={quote} subtotal={totals.subtotal} />
+          <Card>
+            <div className="text-sm font-semibold text-slate-900">{t("client.payment")}</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                variant={checkout.paymentMethod === "CARD" ? "primary" : "secondary"}
+                onClick={() => setCheckout((prev) => ({ ...prev, paymentMethod: "CARD" }))}
+              >
+                {translatePayment("CARD")}
+              </Button>
+              <Button
+                variant={checkout.paymentMethod === "CASH" ? "primary" : "secondary"}
+                onClick={() => setCheckout((prev) => ({ ...prev, paymentMethod: "CASH" }))}
+              >
+                {translatePayment("CASH")}
+              </Button>
+            </div>
+            {checkout.paymentMethod === "CASH" && (
+              <div className="mt-4 space-y-3 text-sm text-slate-600">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={checkout.changeRequired}
+                    onChange={(event) =>
+                      setCheckout((prev) => ({ ...prev, changeRequired: event.target.checked }))
+                    }
+                    className="h-4 w-4 rounded border-slate-300 text-sky-600"
+                  />
+                  {t("client.changeRequired")}
+                </label>
+                {checkout.changeRequired && (
+                  <Input
+                    value={checkout.changeForAmount}
+                    onChange={(event) =>
+                      setCheckout((prev) => ({ ...prev, changeForAmount: event.target.value }))
+                    }
+                    placeholder={t("client.changeAmount")}
+                  />
+                )}
+              </div>
+            )}
+          </Card>
 
-          <div className="inline">
-            <button className="secondary" onClick={handleCreateQuote}>
-              Обновить расчет
-            </button>
-            <button
-              className="primary"
+          <Card>
+            <TotalsBlock quote={quote} subtotal={totals.subtotal} />
+          </Card>
+
+          <div className="flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={handleCreateQuote}>
+              {t("client.refreshQuote")}
+            </Button>
+            <Button
               onClick={handleCreateOrder}
               disabled={
+                isVendorUnavailable(selectedVendor) ||
                 cart.fulfillmentType === "DELIVERY" &&
                 (address.lat === null || address.lng === null || deliveryTooFar)
               }
             >
-              Отправить заказ
-            </button>
+              {t("client.sendOrder")}
+            </Button>
           </div>
         </section>
       )}
 
       {screen === "orders" && (
-        <section className="panel">
-          <div className="page-header">
-            <h2>Orders</h2>
-            <button className="secondary" onClick={() => void loadOrders()}>
-              Refresh
-            </button>
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">{t("client.ordersTitle")}</h2>
+              <p className="text-sm text-slate-500">{t("client.ordersSubtitle")}</p>
+            </div>
+            <Button variant="secondary" onClick={() => void loadOrders()}>
+              {t("common.refresh")}
+            </Button>
           </div>
 
-          <h3>Active</h3>
-          {orders.length === 0 ? (
-            <p>No active orders.</p>
-          ) : (
-            <div className="card-list">
-              {orders.map((entry) => (
-                <button
-                  key={entry.order_id}
-                  className="card"
-                  onClick={() => void openOrderDetails(entry.order_id)}
-                >
-                  <div className="card-title">{entry.vendor_name}</div>
-                  <div className="card-meta">Status: {entry.status}</div>
-                  <div className="card-meta">Total: {entry.total}</div>
-                  <div className="card-meta">Type: {entry.fulfillment_type}</div>
-                  <div className="card-meta">
-                    {new Date(entry.created_at).toLocaleString()}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+          <Card>
+            <div className="text-sm font-semibold text-slate-900">{t("vendor.active")}</div>
+            {isLoading ? (
+              <div className="mt-3 grid gap-2">
+                <Skeleton className="h-14" />
+                <Skeleton className="h-14" />
+              </div>
+            ) : orders.length === 0 ? (
+              <EmptyState
+                title={t("empty.noOrders")}
+                description={t("client.noActiveOrders")}
+              />
+            ) : (
+              <div className="mt-3 grid gap-3">
+                {orders.map((entry) => (
+                  <Card key={entry.order_id} className="bg-slate-50">
+                    <button
+                      className="w-full text-left"
+                      onClick={() => void openOrderDetails(entry.order_id)}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-base font-semibold text-slate-900">
+                          {entry.vendor_name}
+                        </div>
+                        <StatusBadge status={entry.status} />
+                      </div>
+                      <div className="mt-2 text-sm text-slate-500">
+                        {t("common.total")}: {formatCurrency(entry.total)} · {translateFulfillment(entry.fulfillment_type)}
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        {formatDateTime(entry.created_at)}
+                      </div>
+                    </button>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </Card>
 
-          <h3>History</h3>
-          {ordersHistory.length === 0 ? (
-            <p>No past orders.</p>
-          ) : (
-            <div className="card-list">
-              {ordersHistory.map((entry) => (
-                <button
-                  key={entry.order_id}
-                  className="card"
-                  onClick={() => void openOrderDetails(entry.order_id)}
-                >
-                  <div className="card-title">{entry.vendor_name}</div>
-                  <div className="card-meta">Status: {entry.status}</div>
-                  <div className="card-meta">Total: {entry.total}</div>
-                  <div className="card-meta">Type: {entry.fulfillment_type}</div>
-                  <div className="card-meta">
-                    {new Date(entry.created_at).toLocaleString()}
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+          <Card>
+            <div className="text-sm font-semibold text-slate-900">{t("vendor.history")}</div>
+            {isLoading ? (
+              <div className="mt-3 grid gap-2">
+                <Skeleton className="h-14" />
+                <Skeleton className="h-14" />
+              </div>
+            ) : ordersHistory.length === 0 ? (
+              <EmptyState
+                title={t("client.noHistoryOrders")}
+                description={t("client.historyOrdersHint")}
+              />
+            ) : (
+              <div className="mt-3 grid gap-3">
+                {ordersHistory.map((entry) => (
+                  <Card key={entry.order_id} className="bg-slate-50">
+                    <button
+                      className="w-full text-left"
+                      onClick={() => void openOrderDetails(entry.order_id)}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-base font-semibold text-slate-900">
+                          {entry.vendor_name}
+                        </div>
+                        <StatusBadge status={entry.status} />
+                      </div>
+                      <div className="mt-2 text-sm text-slate-500">
+                        {t("common.total")}: {formatCurrency(entry.total)} · {translateFulfillment(entry.fulfillment_type)}
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        {formatDateTime(entry.created_at)}
+                      </div>
+                    </button>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </Card>
         </section>
       )}
 
       {screen === "orderDetails" && (
-        <section className="panel">
-          <button className="link" onClick={goToOrders}>
-            Назад к заказам
-          </button>
-          {order ? (
-            <div className="list">
-              <div className="row">
-                <div>
-                  <div className="card-title">{order.vendor_name ?? order.vendor_id}</div>
-                  <div className="muted">Status: {order.status}</div>
-                  <div className="muted">
-                    Courier: {order.courier_id ? "assigned" : "not assigned"}
-                  </div>
-                  {order.courier_id && (
-                    <div className="muted">
-                      Courier rating:{" "}
-                      {order.courier_rating_avg !== null &&
-                      order.courier_rating_avg !== undefined
-                        ? `${order.courier_rating_avg.toFixed(1)} (${order.courier_rating_count ?? 0})`
-                        : "-"}
+        <section className="space-y-4">
+          <Button variant="ghost" onClick={goToOrders}>
+            {t("client.backToOrders")}
+          </Button>
+          {isLoading && !order ? (
+            <Card>
+              <div className="grid gap-2">
+                <Skeleton className="h-6" />
+                <Skeleton className="h-16" />
+              </div>
+            </Card>
+          ) : order ? (
+            <div className="space-y-4">
+              <Card>
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-lg font-semibold text-slate-900">
+                      {order.vendor_name ?? order.vendor_id}
                     </div>
-                  )}
-                  <div className="muted">Total: {order.total}</div>
-                  <div className="muted">Delivery comment: {order.delivery_comment}</div>
-                  <div className="muted">Vendor comment: {order.vendor_comment}</div>
-                  <div className="muted">Receiver phone: {order.receiver_phone ?? "-"}</div>
-                  <div className="muted">
-                    Payment: {order.payment_method ?? "-"}{" "}
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <StatusBadge status={order.status} />
+                      <Badge variant="info">
+                    {translateFulfillment(order.fulfillment_type)}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 text-sm text-slate-500">
+                      {t("client.courier")}:{" "}
+                      {order.courier
+                        ? `${order.courier.full_name ?? t("client.assigned")} (${order.courier.id})`
+                        : order.courier_id
+                          ? t("client.assigned")
+                          : t("client.notAssigned")}
+                    </div>
+                    {order.courier_id && (
+                      <div className="text-sm text-slate-500">
+                        {t("client.courierRating")}{" "}
+                        {order.courier_rating_avg !== null &&
+                        order.courier_rating_avg !== undefined
+                          ? `${order.courier_rating_avg.toFixed(1)} (${formatNumber(order.courier_rating_count ?? 0)})`
+                          : "-"}
+                      </div>
+                    )}
+                    {order.delivers_self && order.fulfillment_type === "DELIVERY" && (
+                      <div className="text-sm text-slate-500">
+                        {t("client.deliveredByVendor")}
+                      </div>
+                    )}
+                  </div>
+                  <Button
+                    variant="secondary"
+                    onClick={() => order.order_id && void refreshOrder(order.order_id)}
+                  >
+                    {t("common.refresh")}
+                  </Button>
+                </div>
+                <div className="mt-4 grid gap-3 text-sm text-slate-600 md:grid-cols-2">
+                  <div>{t("client.deliveryComment")}: {order.delivery_comment ?? "-"}</div>
+                  <div>{t("client.vendorComment")}: {order.vendor_comment ?? "-"}</div>
+                  <div>{t("client.receiverPhone")}: {order.receiver_phone ?? "-"}</div>
+                  <div>
+                    {t("client.payment")}: {order.payment_method ? translatePayment(order.payment_method) : "-"}{" "}
                     {order.change_for_amount ? `(change ${order.change_for_amount})` : ""}
                   </div>
-                  <div className="muted">Address: {order.address_text ?? "-"}</div>
-                  <div className="muted">
-                    Entrance/Apt: {order.address_entrance ?? "-"} /{" "}
+                  <div>{t("client.address")}: {order.address_text ?? "-"}</div>
+                  <div>
+                    {t("client.entranceApt")}: {order.address_entrance ?? "-"} /{" "}
                     {order.address_apartment ?? "-"}
                   </div>
                 </div>
-                <button
-                  className="secondary"
-                  onClick={() => order.order_id && void refreshOrder(order.order_id)}
-                >
-                  Refresh
-                </button>
-              </div>
+              </Card>
 
-              {deliveryCode && (
-                <div className="row">
-                  <div className="card-title">Delivery code</div>
-                  <div className="muted">{deliveryCode}</div>
-                </div>
+              {order.fulfillment_type === "DELIVERY" && deliveryCode && (
+                <Card>
+                  <div className="text-sm font-semibold text-slate-900">{t("client.deliveryCode")}</div>
+                  <div className="mt-2 text-2xl font-semibold text-slate-900">{deliveryCode}</div>
+                </Card>
+              )}
+              {order.fulfillment_type === "PICKUP" && pickupCode && (
+                <Card>
+                  <div className="text-sm font-semibold text-slate-900">{t("client.pickupCode")}</div>
+                  <div className="mt-2 text-2xl font-semibold text-slate-900">{pickupCode}</div>
+                </Card>
               )}
 
-              <div className="totals">
-                <div className="row">
-                  <div>Items subtotal</div>
-                  <div>{order.items_subtotal}</div>
-                </div>
-                <div className="row">
-                  <div>Discount</div>
-                  <div>-{order.discount_total}</div>
-                </div>
-                <div className="row">
-                  <div>Promo code</div>
-                  <div>-{order.promo_code_discount}</div>
-                </div>
-                <div className="row">
-                  <div>Service fee</div>
-                  <div>{order.service_fee}</div>
-                </div>
-                <div className="row">
-                  <div>Delivery fee</div>
-                  <div>{order.delivery_fee}</div>
-                </div>
-                <div className="row">
-                  <div>Total</div>
-                  <div>{order.total}</div>
-                </div>
-              </div>
-
-              <div className="list">
-                <div className="card-title">Items</div>
-                {order.items.map((item) => (
-                  <div key={item.menu_item_id} className="row">
-                    <div>
-                      <div>{item.title ?? item.menu_item_id}</div>
-                      {item.weight_value && item.weight_unit && (
-                        <div className="muted">
-                          {item.weight_value} {item.weight_unit}
-                        </div>
-                      )}
-                      <div className="muted">Qty: {item.quantity}</div>
-                    </div>
-                    <div className="muted">{item.price}</div>
+              <Card>
+                <div className="text-sm font-semibold text-slate-900">{t("client.totals")}</div>
+                <div className="mt-3 grid gap-2 text-sm text-slate-600">
+                  <div className="flex justify-between">
+                    <span>{t("client.itemsSubtotal")}</span>
+                    <span>{formatCurrency(order.items_subtotal)}</span>
                   </div>
-                ))}
-              </div>
-
-              <div className="list">
-                <div className="card-title">Status timeline</div>
-                <div className="tag-list">
-                  {["NEW", "ACCEPTED", "COOKING", "READY", "COURIER_ACCEPTED", "PICKED_UP", "DELIVERED"].map(
-                    (step) => (
-                      <span key={step} className={order.status === step ? "tag active" : "tag"}>
-                        {step}
-                      </span>
-                    ),
-                  )}
+                  <div className="flex justify-between">
+                    <span>{t("client.discounts")}</span>
+                    <span>-{formatCurrency(order.discount_total)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>{t("client.promoDiscount")}</span>
+                    <span>-{formatCurrency(order.promo_code_discount)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>{t("client.serviceFee")}</span>
+                    <span>{formatCurrency(order.service_fee)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>{t("client.deliveryFee")}</span>
+                    <span>{formatCurrency(order.delivery_fee)}</span>
+                  </div>
+                  <div className="flex justify-between font-semibold text-slate-900">
+                    <span>{t("common.total")}</span>
+                    <span>{formatCurrency(order.total)}</span>
+                  </div>
                 </div>
-              </div>
+              </Card>
 
-              <div className="panel">
-                <div className="card-title">Tracking</div>
-                <NavigationMap
-                  mode="track"
-                  pickup={
-                    order.vendor_geo
-                      ? { lat: order.vendor_geo.lat, lng: order.vendor_geo.lng, label: "Pickup" }
-                      : null
-                  }
-                  dropoff={
-                    order.delivery_location
-                      ? { lat: order.delivery_location.lat, lng: order.delivery_location.lng, label: "Dropoff" }
-                      : null
-                  }
-                  courier={tracking ?? null}
-                />
+              <Card>
+                <div className="text-sm font-semibold text-slate-900">{t("client.items")}</div>
+                <div className="mt-3 grid gap-2">
+                  {order.items.map((item) => (
+                    <div key={item.menu_item_id} className="flex justify-between text-sm text-slate-600">
+                      <div>
+                        <div className="font-medium text-slate-900">
+                          {item.title ?? item.menu_item_id}
+                        </div>
+                        {item.weight_value && item.weight_unit && (
+                          <div className="text-xs text-slate-400">
+                            {item.weight_value} {item.weight_unit}
+                          </div>
+                        )}
+                        <div className="text-xs text-slate-400">{t("client.qty")}: {item.quantity}</div>
+                      </div>
+                      <div className="text-sm text-slate-500">{formatCurrency(item.price)}</div>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+
+              <Card>
+                <div className="text-sm font-semibold text-slate-900">{t("client.statusTimeline")}</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {[
+                    "NEW",
+                    "ACCEPTED",
+                    "COOKING",
+                    "READY",
+                    "HANDOFF_CONFIRMED",
+                    "PICKED_UP",
+                    "DELIVERED",
+                    "COMPLETED",
+                  ].map((step) => (
+                    <Badge key={step} variant={order.status === step ? "info" : "default"}>
+                      {step}
+                    </Badge>
+                  ))}
+                </div>
+              </Card>
+
+              <Card>
+                <div className="text-sm font-semibold text-slate-900">{t("client.tracking")}</div>
+                <div className="mt-3">
+                  <NavigationMap
+                    mode="track"
+                    pickup={
+                      order.vendor_geo
+                        ? {
+                            lat: order.vendor_geo.lat,
+                            lng: order.vendor_geo.lng,
+                            label: t("client.pickupPoint"),
+                          }
+                        : null
+                    }
+                    dropoff={
+                      order.delivery_location
+                        ? {
+                            lat: order.delivery_location.lat,
+                            lng: order.delivery_location.lng,
+                            label: t("client.dropoffPoint"),
+                          }
+                        : null
+                    }
+                    courier={tracking ?? null}
+                  />
+                </div>
                 {tracking ? (
-                  <div className="muted">
-                    Last update:{" "}
+                  <div className="mt-2 text-xs text-slate-400">
+                    {t("client.lastUpdate")}:{" "}
                     {trackingUpdatedAt ? new Date(trackingUpdatedAt).toLocaleTimeString() : "-"}
                   </div>
                 ) : (
-                  <div className="muted">Courier location not available yet.</div>
+                  <div className="mt-2 text-xs text-slate-400">
+                    {t("client.noCourierLocation")}
+                  </div>
                 )}
-              </div>
+              </Card>
 
-              {order.status === "DELIVERED" || order.status === "PICKED_UP_BY_CUSTOMER" ? (
-                <div className="panel">
-                  <h3>Rate your order</h3>
+              {order.status === "COMPLETED" || order.status === "DELIVERED" ? (
+                <Card>
+                  <div className="text-sm font-semibold text-slate-900">{t("client.rateOrder")}</div>
                   {order.rating ? (
-                    <div className="muted">Thanks for rating!</div>
+                    <div className="mt-2 text-sm text-slate-500">{t("client.thanksForRating")}</div>
                   ) : (
-                    <>
-                      <div className="field">
-                        <label>Vendor stars</label>
-                        <input
-                          className="input"
+                    <div className="mt-3 grid gap-4">
+                      <label className="text-sm text-slate-600">
+                        {t("client.vendorStars")}
+                        <Input
                           type="number"
                           min={1}
                           max={5}
@@ -1291,10 +1630,10 @@ export function App() {
                               vendorStars: Number(event.target.value),
                             }))
                           }
+                          className="mt-1"
                         />
-                        <textarea
-                          className="input"
-                          placeholder="Vendor comment"
+                        <Textarea
+                          placeholder={t("client.vendorCommentPlaceholder")}
                           value={ratingDraft.vendorComment}
                           onChange={(event) =>
                             setRatingDraft((prev) => ({
@@ -1302,13 +1641,13 @@ export function App() {
                               vendorComment: event.target.value,
                             }))
                           }
+                          className="mt-2"
                         />
-                      </div>
+                      </label>
                       {order.courier_id && (
-                        <div className="field">
-                          <label>Courier stars</label>
-                          <input
-                            className="input"
+                        <label className="text-sm text-slate-600">
+                          {t("client.courierStars")}
+                          <Input
                             type="number"
                             min={1}
                             max={5}
@@ -1319,10 +1658,10 @@ export function App() {
                                 courierStars: Number(event.target.value),
                               }))
                             }
+                            className="mt-1"
                           />
-                          <textarea
-                            className="input"
-                            placeholder="Courier comment"
+                          <Textarea
+                            placeholder={t("client.courierCommentPlaceholder")}
                             value={ratingDraft.courierComment}
                             onChange={(event) =>
                               setRatingDraft((prev) => ({
@@ -1330,11 +1669,11 @@ export function App() {
                                 courierComment: event.target.value,
                               }))
                             }
+                            className="mt-2"
                           />
-                        </div>
+                        </label>
                       )}
-                      <button
-                        className="primary"
+                      <Button
                         onClick={async () => {
                           if (!order.order_id) return;
                           setIsLoading(true);
@@ -1344,36 +1683,38 @@ export function App() {
                               vendor_stars: ratingDraft.vendorStars,
                               vendor_comment: ratingDraft.vendorComment,
                               courier_stars: order.courier_id ? ratingDraft.courierStars : null,
-                              courier_comment: order.courier_id
-                                ? ratingDraft.courierComment
-                                : null,
+                              courier_comment: order.courier_id ? ratingDraft.courierComment : null,
                             });
                             await refreshOrder(order.order_id);
                           } catch (err) {
                             setError(
-                              err instanceof Error ? err.message : "Failed to submit rating",
+                              err instanceof Error ? err.message : t("errors.submitRating"),
                             );
                           } finally {
                             setIsLoading(false);
                           }
                         }}
                       >
-                        Submit rating
-                      </button>
-                    </>
+                        {t("client.submitRating")}
+                      </Button>
+                    </div>
                   )}
-                </div>
+                </Card>
               ) : null}
             </div>
           ) : (
-            <p>No order selected.</p>
+            <Card>
+              <EmptyState
+                title={t("client.noOrderSelected")}
+                description={t("client.noOrderSelectedDesc")}
+              />
+            </Card>
           )}
         </section>
       )}
 
       {screen === "profile" && (
         <section className="panel">
-          <h2>Profile</h2>
           <div className="tag-list">
             {(["account", "addresses", "promo", "support", "about"] as ProfileTab[]).map(
               (tab) => (
@@ -1382,18 +1723,182 @@ export function App() {
                   className={profileTab === tab ? "tag active" : "tag"}
                   onClick={() => setProfileTab(tab)}
                 >
-                  {tab}
+                  {t(`profileTab.${tab}`)}
                 </button>
               ),
             )}
+          </div>
+          <div className="mt-3 flex items-center gap-2 text-sm text-slate-600">
+            <span>{t("client.language")}</span>
+            <select
+              className="input"
+              value={getLanguage()}
+              onChange={(event) => setLanguage(event.target.value as "ru" | "uz" | "kaa" | "en")}
+            >
+              {LANGUAGES.map((lang) => (
+                <option key={lang.code} value={lang.code}>
+                  {lang.label}
+                </option>
+              ))}
+            </select>
           </div>
 
           {profileTab === "account" && (
             <div className="list">
               <div className="card">
-                <div className="card-title">Account</div>
+                <div className="card-title">{t("client.authTitle")}</div>
+                {authToken ? (
+                  <div className="space-y-2 text-sm text-slate-600">
+                    <div>{t("client.authLoggedIn")}</div>
+                    <button className="secondary" onClick={() => setAuthToken(null)}>
+                      {t("common.logout")}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="field">
+                      <label>{t("fields.phone")}</label>
+                      <input
+                        className="input"
+                        value={loginForm.phone}
+                        onChange={(event) =>
+                          setLoginForm((prev) => ({ ...prev, phone: event.target.value }))
+                        }
+                      />
+                    </div>
+                    <div className="field">
+                      <label>{t("fields.password")}</label>
+                      <input
+                        className="input"
+                        type="password"
+                        value={loginForm.password}
+                        onChange={(event) =>
+                          setLoginForm((prev) => ({ ...prev, password: event.target.value }))
+                        }
+                      />
+                    </div>
+                    <button
+                      className="primary"
+                      disabled={authLoading}
+                      onClick={async () => {
+                        setAuthLoading(true);
+                        setAuthError(null);
+                        try {
+                          const result = await loginClient({
+                            phone: loginForm.phone,
+                            password: loginForm.password,
+                          });
+                          setAuthToken(result.token);
+                          toast.success(t("common.success"));
+                        } catch (err) {
+                          setAuthError(
+                            err instanceof Error ? err.message : t("errors.loginFailed"),
+                          );
+                        } finally {
+                          setAuthLoading(false);
+                        }
+                      }}
+                    >
+                      {t("common.login")}
+                    </button>
+                    <div className="divider" />
+                    <div className="field">
+                      <label>{t("fields.fullName")}</label>
+                      <input
+                        className="input"
+                        value={registerForm.full_name}
+                        onChange={(event) =>
+                          setRegisterForm((prev) => ({ ...prev, full_name: event.target.value }))
+                        }
+                      />
+                    </div>
+                    <div className="field">
+                      <label>{t("fields.birthDate")}</label>
+                      <input
+                        className="input"
+                        type="date"
+                        value={registerForm.birth_date}
+                        onChange={(event) =>
+                          setRegisterForm((prev) => ({ ...prev, birth_date: event.target.value }))
+                        }
+                      />
+                    </div>
+                    <div className="field">
+                      <label>{t("fields.phone")}</label>
+                      <input
+                        className="input"
+                        value={registerForm.phone}
+                        onChange={(event) =>
+                          setRegisterForm((prev) => ({ ...prev, phone: event.target.value }))
+                        }
+                      />
+                    </div>
+                    <div className="field">
+                      <label>{t("fields.password")}</label>
+                      <input
+                        className="input"
+                        type="password"
+                        value={registerForm.password}
+                        onChange={(event) =>
+                          setRegisterForm((prev) => ({ ...prev, password: event.target.value }))
+                        }
+                      />
+                    </div>
+                    <button
+                      className="secondary"
+                      disabled={authLoading}
+                      onClick={async () => {
+                        setAuthLoading(true);
+                        setAuthError(null);
+                        try {
+                          const result = await registerClient({
+                            full_name: registerForm.full_name,
+                            birth_date: registerForm.birth_date,
+                            phone: registerForm.phone,
+                            password: registerForm.password,
+                          });
+                          setAuthToken(result.token);
+                          toast.success(t("common.success"));
+                        } catch (err) {
+                          setAuthError(
+                            err instanceof Error ? err.message : t("errors.registerFailed"),
+                          );
+                        } finally {
+                          setAuthLoading(false);
+                        }
+                      }}
+                    >
+                      {t("common.register")}
+                    </button>
+                    <button
+                      className="ghost"
+                      disabled={authLoading}
+                      onClick={async () => {
+                        setAuthLoading(true);
+                        setAuthError(null);
+                        try {
+                          const result = await telegramLogin();
+                          setAuthToken(result.token);
+                          toast.success(t("common.success"));
+                        } catch (err) {
+                          setAuthError(
+                            err instanceof Error ? err.message : t("errors.loginFailed"),
+                          );
+                        } finally {
+                          setAuthLoading(false);
+                        }
+                      }}
+                    >
+                      {t("client.telegramLogin")}
+                    </button>
+                    {authError && <div className="text-sm text-rose-500">{authError}</div>}
+                  </div>
+                )}
+              </div>
+              <div className="card">
+                <div className="card-title">{t("nav.account")}</div>
                 <div className="field">
-                  <label>Full name</label>
+                  <label>{t("fields.fullName")}</label>
                   <input
                     className="input"
                     value={profile?.full_name ?? ""}
@@ -1413,7 +1918,7 @@ export function App() {
                   />
                 </div>
                 <div className="field">
-                  <label>Phone</label>
+                  <label>{t("fields.phone")}</label>
                   <input
                     className="input"
                     value={profile?.phone ?? ""}
@@ -1433,7 +1938,7 @@ export function App() {
                   />
                 </div>
                 <div className="field">
-                  <label>Telegram username</label>
+                  <label>{t("fields.telegramUsername")}</label>
                   <input
                     className="input"
                     value={profile?.telegram_username ?? ""}
@@ -1453,7 +1958,7 @@ export function App() {
                   />
                 </div>
                 <div className="field">
-                  <label>About</label>
+                  <label>{t("fields.about")}</label>
                   <textarea
                     className="input"
                     value={profile?.about ?? ""}
@@ -1487,13 +1992,13 @@ export function App() {
                       });
                       setProfile(updated);
                     } catch (err) {
-                      setError(err instanceof Error ? err.message : "Failed to update profile");
+                      setError(err instanceof Error ? err.message : t("errors.updateProfile"));
                     } finally {
                       setIsLoading(false);
                     }
                   }}
                 >
-                  Save
+                  {t("common.save")}
                 </button>
               </div>
             </div>
@@ -1502,12 +2007,12 @@ export function App() {
           {profileTab === "addresses" && (
             <div className="list">
               <button className="secondary" onClick={() => void loadAddresses()}>
-                Refresh addresses
+                {t("client.refreshAddresses")}
               </button>
               <div className="card">
-                <div className="card-title">Add address</div>
+                <div className="card-title">{t("client.addAddress")}</div>
                 <div className="field">
-                  <label>Type</label>
+                  <label>{t("fields.type")}</label>
                   <div className="inline">
                     {(["HOME", "WORK", "OTHER"] as AddressType[]).map((type) => (
                       <button
@@ -1515,13 +2020,13 @@ export function App() {
                         className={addressForm.type === type ? "tag active" : "tag"}
                         onClick={() => setAddressForm((prev) => ({ ...prev, type }))}
                       >
-                        {type}
+                        {t(`addressType.${type}`)}
                       </button>
                     ))}
                   </div>
                 </div>
                 <div className="field">
-                  <label>Address</label>
+                  <label>{t("fields.address")}</label>
                   <input
                     className="input"
                     value={addressForm.address_text}
@@ -1532,7 +2037,7 @@ export function App() {
                 </div>
                 <div className="grid">
                   <label>
-                    Lat
+                    {t("fields.latitude")}
                     <input
                       className="input"
                       value={addressForm.lat}
@@ -1542,7 +2047,7 @@ export function App() {
                     />
                   </label>
                   <label>
-                    Lng
+                    {t("fields.longitude")}
                     <input
                       className="input"
                       value={addressForm.lng}
@@ -1552,7 +2057,7 @@ export function App() {
                     />
                   </label>
                   <label>
-                    Entrance
+                    {t("client.entrance")}
                     <input
                       className="input"
                       value={addressForm.entrance}
@@ -1562,7 +2067,7 @@ export function App() {
                     />
                   </label>
                   <label>
-                    Apartment
+                    {t("client.apartment")}
                     <input
                       className="input"
                       value={addressForm.apartment}
@@ -1578,7 +2083,7 @@ export function App() {
                     const lat = Number(addressForm.lat);
                     const lng = Number(addressForm.lng);
                     if (!addressForm.address_text.trim() || !Number.isFinite(lat) || !Number.isFinite(lng)) {
-                      setError("Address, lat, and lng are required.");
+                      setError(t("errors.addressLatLng"));
                       return;
                     }
                     setIsLoading(true);
@@ -1602,17 +2107,17 @@ export function App() {
                       });
                       await loadAddresses();
                     } catch (err) {
-                      setError(err instanceof Error ? err.message : "Failed to add address");
+                      setError(err instanceof Error ? err.message : t("errors.addAddress"));
                     } finally {
                       setIsLoading(false);
                     }
                   }}
                 >
-                  Save address
+                  {t("client.saveAddress")}
                 </button>
               </div>
               {savedAddresses.length === 0 ? (
-                <div className="muted">No saved addresses.</div>
+                <div className="muted">{t("client.noSavedAddresses")}</div>
               ) : (
                 savedAddresses.map((entry) => (
                   <div key={entry.id} className="row">
@@ -1629,13 +2134,13 @@ export function App() {
                           await removeAddress(entry.id);
                           await loadAddresses();
                         } catch (err) {
-                          setError(err instanceof Error ? err.message : "Failed to remove address");
+                          setError(err instanceof Error ? err.message : t("errors.removeAddress"));
                         } finally {
                           setIsLoading(false);
                         }
                       }}
                     >
-                      Remove
+                      {t("common.delete")}
                     </button>
                   </div>
                 ))
@@ -1646,9 +2151,9 @@ export function App() {
           {profileTab === "promo" && (
             <div className="list">
               <div className="row">
-                <div>Saved promo codes</div>
+                <div>{t("client.savedPromoCodes")}</div>
                 <button className="secondary" onClick={() => void listPromoCodes().then(setPromoCodes)}>
-                  Refresh
+                  {t("common.refresh")}
                 </button>
               </div>
               {promoCodes.map((promo) => (
@@ -1666,13 +2171,13 @@ export function App() {
                         await removePromoCode(promo.id);
                         setPromoCodes((prev) => prev.filter((entry) => entry.id !== promo.id));
                       } catch (err) {
-                        setError(err instanceof Error ? err.message : "Failed to remove promo code");
+                        setError(err instanceof Error ? err.message : t("errors.removePromo"));
                       } finally {
                         setIsLoading(false);
                       }
                     }}
                   >
-                    Remove
+                    {t("common.delete")}
                   </button>
                 </div>
               ))}
@@ -1687,7 +2192,7 @@ export function App() {
                     setPromoCodes((prev) => [entry, ...prev]);
                     setCheckout((prev) => ({ ...prev, manualPromo: "" }));
                   } catch (err) {
-                    setError(err instanceof Error ? err.message : "Failed to add promo code");
+                    setError(err instanceof Error ? err.message : t("errors.addPromo"));
                   } finally {
                     setIsLoading(false);
                   }
@@ -1699,19 +2204,19 @@ export function App() {
           {profileTab === "support" && (
             <div className="list">
               <button className="primary" onClick={() => openTelegramSupport(supportLink)}>
-                Support
+                {t("nav.support")}
               </button>
               <button
                 className="secondary"
                 onClick={() => openTelegramSupport(`${supportLink}?start=become_courier`)}
               >
-                Become courier
+                {t("client.becomeCourier")}
               </button>
               <button
                 className="secondary"
                 onClick={() => openTelegramSupport(`${supportLink}?start=become_partner`)}
               >
-                Become partner
+                {t("client.becomePartner")}
               </button>
             </div>
           )}
@@ -1719,10 +2224,10 @@ export function App() {
           {profileTab === "about" && (
             <div className="list">
               <div className="card">
-                <div className="card-title">About service</div>
-                <div className="muted">Version: 0.1.0</div>
-                <div className="muted">Service fee: 3000</div>
-                <div className="muted">Delivery fee: 3000 + distance</div>
+                <div className="card-title">{t("client.aboutService")}</div>
+                <div className="muted">{t("client.version", { version: "0.1.0" })}</div>
+                <div className="muted">{t("client.serviceFeeLine")}</div>
+                <div className="muted">{t("client.deliveryFeeLine")}</div>
               </div>
             </div>
           )}
@@ -1733,13 +2238,13 @@ export function App() {
         <div className="modal">
           <div className="modal-content">
             <div className="row">
-              <div className="card-title">Select delivery location</div>
+              <div className="card-title">{t("client.selectLocation")}</div>
               <div className="inline">
                 <button
                   className="secondary"
                   onClick={() => {
                     if (!navigator.geolocation) {
-                      setError("Geolocation is not available.");
+                      setError(t("errors.geolocationUnavailable"));
                       return;
                     }
                     navigator.geolocation.getCurrentPosition(
@@ -1748,17 +2253,17 @@ export function App() {
                           ...prev,
                           lat: position.coords.latitude,
                           lng: position.coords.longitude,
-                          addressText: prev.addressText || "My location",
+                          addressText: prev.addressText || t("client.myLocation"),
                         }));
                       },
-                      () => setError("Failed to get your location."),
+                      () => setError(t("errors.geolocationFailed")),
                     );
                   }}
                 >
-                  Use my location
+                  {t("client.useMyLocation")}
                 </button>
                 <button className="secondary" onClick={() => setShowMap(false)}>
-                  Close
+                  {t("common.cancel")}
                 </button>
               </div>
             </div>
@@ -1778,7 +2283,7 @@ export function App() {
                     ...prev,
                     lat,
                     lng,
-                    addressText: prev.addressText || "Selected location",
+                    addressText: prev.addressText || t("client.selectedLocation"),
                   }))
                 }
               />
@@ -1799,44 +2304,46 @@ function StickyBar({
   subtotal: number;
   onNext: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="sticky-bar">
       <div>
-        {itemsCount} items · {subtotal}
+        {itemsCount} · {formatCurrency(subtotal)}
       </div>
-      <button className="primary" onClick={onNext}>
-        Далее
-      </button>
+      <Button onClick={onNext} className="bg-white text-slate-900 hover:bg-slate-100">
+        {t("common.continue")}
+      </Button>
     </div>
   );
 }
 
 function TotalsBlock({ quote, subtotal }: { quote: QuoteResponse | null; subtotal: number }) {
+  const { t } = useTranslation();
   if (!quote) {
     return (
       <div className="totals">
         <div className="row">
-          <div>Items subtotal</div>
-          <div>{subtotal}</div>
+          <div>{t("client.itemsSubtotal")}</div>
+          <div>{formatCurrency(subtotal)}</div>
         </div>
         <div className="row">
-          <div>Discounts</div>
-          <div>-0</div>
+          <div>{t("client.discounts")}</div>
+          <div>-{formatCurrency(0)}</div>
         </div>
         <div className="row">
-          <div>Promo code</div>
-          <div>-0</div>
+          <div>{t("client.promoDiscount")}</div>
+          <div>-{formatCurrency(0)}</div>
         </div>
         <div className="row">
-          <div>Service fee</div>
+          <div>{t("client.serviceFee")}</div>
           <div>—</div>
         </div>
         <div className="row">
-          <div>Delivery fee</div>
+          <div>{t("client.deliveryFee")}</div>
           <div>—</div>
         </div>
         <div className="row">
-          <div>Total</div>
+          <div>{t("common.total")}</div>
           <div>—</div>
         </div>
       </div>
@@ -1845,28 +2352,28 @@ function TotalsBlock({ quote, subtotal }: { quote: QuoteResponse | null; subtota
   return (
     <div className="totals">
       <div className="row">
-        <div>Items subtotal</div>
-        <div>{quote.items_subtotal}</div>
+        <div>{t("client.itemsSubtotal")}</div>
+        <div>{formatCurrency(quote.items_subtotal)}</div>
       </div>
       <div className="row">
-        <div>Discounts</div>
-        <div>-{quote.discount_total}</div>
+        <div>{t("client.discounts")}</div>
+        <div>-{formatCurrency(quote.discount_total)}</div>
       </div>
       <div className="row">
-        <div>Promo code</div>
-        <div>-{quote.promo_code_discount}</div>
+        <div>{t("client.promoDiscount")}</div>
+        <div>-{formatCurrency(quote.promo_code_discount)}</div>
       </div>
       <div className="row">
-        <div>Service fee</div>
-        <div>{quote.service_fee}</div>
+        <div>{t("client.serviceFee")}</div>
+        <div>{formatCurrency(quote.service_fee)}</div>
       </div>
       <div className="row">
-        <div>Delivery fee</div>
-        <div>{quote.delivery_fee}</div>
+        <div>{t("client.deliveryFee")}</div>
+        <div>{formatCurrency(quote.delivery_fee)}</div>
       </div>
       <div className="row">
-        <div>Total</div>
-        <div>{quote.total}</div>
+        <div>{t("common.total")}</div>
+        <div>{formatCurrency(quote.total)}</div>
       </div>
     </div>
   );
@@ -1881,17 +2388,18 @@ function PromoCodeForm({
   onChange: (value: string) => void;
   onAdd: (value: string) => void;
 }) {
+  const { t } = useTranslation();
   return (
-    <div className="inline">
-      <input
-        className="input"
-        placeholder="Add promo code"
+    <div className="flex flex-wrap items-center gap-2">
+      <Input
+        placeholder={t("client.addPromoPlaceholder")}
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        className="flex-1"
       />
-      <button className="secondary" onClick={() => value.trim() && onAdd(value.trim())}>
-        Add
-      </button>
+      <Button variant="secondary" onClick={() => value.trim() && onAdd(value.trim())}>
+        {t("common.add")}
+      </Button>
     </div>
   );
 }

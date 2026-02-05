@@ -28,6 +28,20 @@
 - **Done**: Shared in-app navigation module (maps + route + ETA) used by client and courier miniapps.
 - **Done**: Client delivery map picker now sets location on click (and via geolocation), default center Qonirat, and distance guardrails with backend `DELIVERY_TOO_FAR` validation.
 - **Done**: Admin panel upgrades: vendor stats/finance/promotions visibility, order admin actions, courier/client management, and service finance summary.
+- **Done**: UI refresh foundation: Tailwind + shared UI kit + icons + toasts across admin/vendor/client/courier apps.
+- **Done**: UI refresh applied to Vendor Promotions/Account, Client Cart/Checkout/Orders, and Courier Balance/Rating/Profile with skeletons + empty states.
+- **Done**: i18n integrated across admin/vendor/client/courier with i18next, language switchers, and Intl-based formatting.
+- **Done**: PR-A auth/controls: shared JWT auth helpers, vendor login, client phone registration/login, DEV_MODE fallbacks, upload endpoint, block/unblock fields, and courier full-name exposure in order responses. Admin/vendor/client/courier UIs updated for auth + blocking.
+- **Done**: PR-A test stabilization: unified AuthError handling, quote-route test uses repository (no Prisma), Prisma client mocks expanded to avoid 500s in unit tests.
+- **Done**: PR-B order lifecycle updates: unified state machine (HANDOFF_CONFIRMED, COMPLETED), handoff/delivery codes, pickup/self-delivery flows, and courier/vendor endpoints aligned across apps.
+- **Done**: PR-C vendor schedule + geo: VendorSchedule model, timezone, map pickers in vendor/admin, open/closed badges in client, and closed guardrails for quote/order.
+- **Done**: PR-D media uploads + UI polish: vendor/menu images via `/files/upload`, image previews across admin/vendor/client, modal scroll lock, and i18n key readiness (values default to keys).
+- **Done**: PR-E i18n production: ru/uz/kaa/en translations generated, language detection via Telegram/browser, and persisted language switchers.
+- **Done**: Courier login endpoint + miniapp login/logout with JWT; vendor READY handler fixed; asset URL resolver added for images across apps; fulfillment translations wired; vendor READY test added.
+- **Done**: i18n label fixes (ru/uz/kaa/en), language selector labels set to RU/UZ/QA/EN, courier avatar upload (file-based), vendor schedule UI cleaned up (opening hours hidden), and courier order DTO code fields guarded with test coverage.
+- **Done**: Courier JWT-only scoping enforced (no header courierId), courier isolation test added, and courier code UI guarded to avoid handoff_code crashes. Page header duplication reduced in client/courier/vendor views.
+- **Done**: Courier pickup step labels corrected to mean courier pickup from vendor (not self-pickup).
+- **Done**: Courier pickup/handoff/deliver handlers now guard missing JSON body to avoid `handoff_code` undefined crashes.
 - **In progress**: Phase 4 mini apps (Client + Courier) and minimal Telegram auth wiring.
 
 ## Phase 1 summary
@@ -68,12 +82,12 @@
 - (ASSUMPTION) When multiple FIXED_PRICE/PERCENT promotions apply to the same item, apply only the single best per-unit discount (no stacking).
 - (ASSUMPTION) `POST /client/cart/quote` requires a delivery comment for DELIVERY quotes and rejects other promotion types in Phase 1.
 - (ASSUMPTION) `POST /client/cart/quote` is unauthenticated in Phase 1 until auth wiring is defined.
-- (ASSUMPTION) `POST /client/orders` and courier endpoints use temporary header-based RBAC (`x-role`, `x-client-id`, `x-courier-id`) until auth/initData verification is implemented.
+- (ASSUMPTION) `POST /client/orders` and some endpoints use temporary header-based RBAC (`x-role`, `x-client-id`) until auth/initData verification is implemented; courier endpoints require JWT.
 - (ASSUMPTION) COMBO promotions use `value_numeric` as the combo total price; discount applies only if combo price is lower than full sum.
 - (ASSUMPTION) BUY_X_GET_Y promotions use `discount_percent` on the "get" items and apply only to full sets.
 - (ASSUMPTION) GIFT promotions apply when `items_subtotal` meets `min_order_amount`, and gift items are added at price 0.
 - (ASSUMPTION) Courier available orders are DELIVERY orders with status `READY` and no `courier_id` assigned.
-- (ASSUMPTION) Tracking endpoint returns the latest courier location only after `COURIER_ACCEPTED`; otherwise it returns `null` location.
+- (ASSUMPTION) Tracking endpoint returns the latest courier location only after READY/HANDOFF_CONFIRMED/PICKED_UP; otherwise it returns `null` location.
 - (ASSUMPTION) Rate limiting for code attempts is in-memory per order+courier (or order+role) with short rolling windows; exceeded attempts return 429.
 - (ASSUMPTION) Admin promo codes UI stores data locally in the browser until promo code backend is implemented.
 - (ASSUMPTION) Promo code matching is case-sensitive and validated against active date range, usage limit, and min order sum (based on items_subtotal).
@@ -85,7 +99,7 @@
 - (ASSUMPTION) Vendor Web UI is not implemented yet; vendor order responses already include `delivery_comment` and `vendor_comment`.
 - (ASSUMPTION) Client address is stored locally for MVP; server stores `address_text` and structured fields when provided.
 - (ASSUMPTION) Promo codes are single-use per client; reuse returns `PROMO_ALREADY_USED`.
-- (ASSUMPTION) Ratings are allowed only after DELIVERED or PICKED_UP_BY_CUSTOMER.
+- (ASSUMPTION) Ratings are allowed only after DELIVERED or COMPLETED.
 - (ASSUMPTION) Vendor Web DEV_MODE requires `x-dev-user: vendor` and `x-vendor-id` headers.
 
 ## Manual QA checklist (Phase 4 client flow)
@@ -109,6 +123,8 @@
 
 ## TODO / Next steps
 - Add auth + Telegram `initData` verification and RBAC.
+- Implement PR-D (media uploads, client UI polish).
+- Audit remaining screens for UI kit consistency (vendor dashboard/menu/order details, client home/vendor/details, courier home/history).
 - Consider admin CSV export for finance if needed.
 - Unskip `tests/quote-repository.int.test.ts` once the test DB is wired in CI/local env.
 - Add real vendor/menu item names and categories for client UI.
@@ -119,6 +135,8 @@
 - Document DEV headers in public docs once auth is finalized.
 - Add optional courier model + seed when courier accounts are formalized.
 - Remove `napkins_count` from API after deprecation window.
+- Complete remaining translations across all locale keys (ru/uz/kaa/en) for full UI coverage.
+- Review translations for tone/terminology consistency (optional refinement).
 
 ## Active phase
 - Phase: 4

@@ -17,7 +17,10 @@
   },
   "dependencies": {
     "@fastify/cors": "^8.5.0",
+    "@fastify/multipart": "^8.0.0",
+    "@fastify/static": "^7.0.0",
     "@prisma/client": "^5.20.0",
+    "bcryptjs": "^2.4.3",
     "dotenv": "^16.4.5",
     "fastify": "^4.27.0",
     "jsonwebtoken": "^9.0.3"

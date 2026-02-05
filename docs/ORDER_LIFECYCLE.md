@@ -14,19 +14,25 @@
 |------|-------|------------|
 | NEW | Vendor | preparation states |
 | ACCEPTED | Vendor | COOKING, READY |
-| COURIER_ACCEPTED | Courier | PICKED_UP |
+| READY | Courier | HANDOFF_CONFIRMED |
+| HANDOFF_CONFIRMED | Courier | PICKED_UP |
 | PICKED_UP | Courier | DELIVERED |
-| READY_FOR_PICKUP | Client | PICKED_UP_BY_CUSTOMER |
+| DELIVERED | System | COMPLETED |
+| READY (pickup) | Vendor | HANDOFF_CONFIRMED |
 
 ## Codes
-- Pickup code:
-  - Generated on order creation
+- Handoff code (delivery orders):
+  - Generated when vendor marks READY
   - Shown to vendor
   - Entered by courier
-- Delivery code:
+- Pickup code (pickup orders):
   - Generated on order creation
   - Shown to client
-  - Entered by courier
+  - Entered by vendor
+- Delivery code:
+  - Generated on order creation (delivery orders)
+  - Shown to client
+  - Entered by courier (or vendor for self-delivery)
 - Codes are stored ONLY as hashes
 
 ## Cancellation rules (logic only)

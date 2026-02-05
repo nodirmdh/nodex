@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 * {
   box-sizing: border-box;
 }
@@ -5,8 +9,12 @@
 body {
   margin: 0;
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-  background: #f8fafc;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
   color: #0f172a;
+}
+
+body.modal-open {
+  overflow: hidden;
 }
 
 .app {
@@ -39,11 +47,51 @@ body {
   padding: 6px 10px;
   border-radius: 999px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .tabs button.active {
   background: #0f172a;
   color: #fff;
+}
+
+.ghost {
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  padding: 6px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.login-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 420px;
+}
+
+.form-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.muted {
+  color: #64748b;
 }
 
 .panel {
@@ -160,6 +208,8 @@ body {
   max-width: 720px;
   width: 100%;
   box-shadow: 0 10px 40px rgba(15, 23, 42, 0.2);
+  max-height: 80vh;
+  overflow: auto;
 }
 
 .stepper {

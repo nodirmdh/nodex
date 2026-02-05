@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
+import { Button, Input, PageShell, Table, TableCell, TableHead, TableHeaderCell, TableRow } from "@nodex/ui";
+import { formatNumber } from "@nodex/i18n";
 import { ApiClient, PromotionSummary } from "../api/client";
 
 const client = new ApiClient({
@@ -9,6 +12,7 @@ const client = new ApiClient({
 });
 
 export function PromotionsPage() {
+  const { t } = useTranslation();
   const [promotions, setPromotions] = useState<PromotionSummary[]>([]);
   const [vendorId, setVendorId] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -21,7 +25,7 @@ export function PromotionsPage() {
       const data = await client.listPromotions(vendorId || undefined);
       setPromotions(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load promotions");
+      setError(err instanceof Error ? err.message : t("errors.loadPromotions"));
     } finally {
       setIsLoading(false);
     }
@@ -32,60 +36,58 @@ export function PromotionsPage() {
   }, []);
 
   return (
-    <section>
-      <div className="page-header">
-        <h1>Promotions</h1>
-        <button className="secondary" onClick={() => void loadPromotions()}>
-          Refresh
-        </button>
-      </div>
-
-      <div className="filters">
-        <label>
-          Vendor ID
-          <input
-            type="text"
-            value={vendorId}
-            onChange={(event) => setVendorId(event.target.value)}
-            placeholder="vendor uuid"
-          />
-        </label>
-        <button className="primary" onClick={() => void loadPromotions()}>
-          Apply filters
-        </button>
+    <PageShell
+      title={t("admin.promotions.title")}
+      subtitle={t("admin.promotions.subtitle")}
+      actions={
+        <Button variant="secondary" onClick={() => void loadPromotions()}>
+          {t("common.refresh")}
+        </Button>
+      }
+    >
+      <div className="grid gap-3 md:grid-cols-3">
+        <Input
+          type="text"
+          value={vendorId}
+          onChange={(event) => setVendorId(event.target.value)}
+          placeholder={t("admin.promotions.vendorPlaceholder")}
+        />
+        <Button onClick={() => void loadPromotions()}>
+          {t("admin.promotions.applyFilters")}
+        </Button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
       {isLoading ? (
-        <p>Loading promotions…</p>
+        <p>{t("admin.promotions.loading")}</p>
       ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Vendor</th>
-              <th>Type</th>
-              <th>Value</th>
-              <th>Priority</th>
-              <th>Active</th>
-              <th>Items</th>
-            </tr>
-          </thead>
+        <Table>
+          <TableHead>
+            <TableRow>
+              <TableHeaderCell>{t("fields.id")}</TableHeaderCell>
+              <TableHeaderCell>{t("admin.promotions.table.vendor")}</TableHeaderCell>
+              <TableHeaderCell>{t("fields.type")}</TableHeaderCell>
+              <TableHeaderCell>{t("admin.promotions.table.value")}</TableHeaderCell>
+              <TableHeaderCell>{t("promo.priority")}</TableHeaderCell>
+              <TableHeaderCell>{t("fields.active")}</TableHeaderCell>
+              <TableHeaderCell>{t("admin.promotions.table.items")}</TableHeaderCell>
+            </TableRow>
+          </TableHead>
           <tbody>
             {promotions.map((promo) => (
-              <tr key={promo.promotion_id}>
-                <td>{promo.promotion_id}</td>
-                <td>{promo.vendor_id}</td>
-                <td>{promo.promo_type}</td>
-                <td>{promo.value_numeric}</td>
-                <td>{promo.priority ?? 0}</td>
-                <td>{promo.is_active ? "Yes" : "No"}</td>
-                <td>{promo.items?.join(", ") || "-"}</td>
-              </tr>
+              <TableRow key={promo.promotion_id}>
+                <TableCell>{promo.promotion_id}</TableCell>
+                <TableCell>{promo.vendor_id}</TableCell>
+                <TableCell>{promo.promo_type}</TableCell>
+                <TableCell>{formatNumber(promo.value_numeric ?? 0)}</TableCell>
+                <TableCell>{formatNumber(promo.priority ?? 0)}</TableCell>
+                <TableCell>{promo.is_active ? t("common.yes") : t("common.no")}</TableCell>
+                <TableCell>{promo.items?.join(", ") || "-"}</TableCell>
+              </TableRow>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
-    </section>
+    </PageShell>
   );
 }

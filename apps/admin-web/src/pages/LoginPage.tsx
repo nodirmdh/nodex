@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 
 type LoginResponse = { token: string };
 
 export function LoginPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -25,7 +27,7 @@ export function LoginPage() {
       );
 
       if (!response.ok) {
-        setError("Invalid credentials.");
+        setError(t("admin.login.invalid"));
         return;
       }
 
@@ -33,7 +35,7 @@ export function LoginPage() {
       localStorage.setItem("nodex_admin_token", data.token);
       navigate("/vendors");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
+      setError(err instanceof Error ? err.message : t("admin.login.failed"));
     } finally {
       setIsLoading(false);
     }
@@ -41,10 +43,10 @@ export function LoginPage() {
 
   return (
     <section className="login-page">
-      <h1>Admin Login</h1>
+      <h1>{t("admin.login.title")}</h1>
       <form className="login-form" onSubmit={handleSubmit}>
         <label>
-          Username
+          {t("admin.login.username")}
           <input
             type="text"
             value={username}
@@ -52,7 +54,7 @@ export function LoginPage() {
           />
         </label>
         <label>
-          Password
+          {t("admin.login.password")}
           <input
             type="password"
             value={password}
@@ -61,7 +63,7 @@ export function LoginPage() {
         </label>
         {error && <div className="error-banner">{error}</div>}
         <button className="primary" type="submit" disabled={isLoading}>
-          {isLoading ? "Signing in..." : "Sign in"}
+          {isLoading ? t("admin.login.signingIn") : t("admin.login.signIn")}
         </button>
       </form>
     </section>

@@ -1,5 +1,21 @@
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 
+import {
+  Button,
+  DialogContent,
+  DialogRoot,
+  DialogTitle,
+  Input,
+  PageShell,
+  Select,
+  Table,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+} from "@nodex/ui";
+import { formatNumber } from "@nodex/i18n";
 import { ApiClient, PromoCode } from "../api/client";
 
 const client = new ApiClient({
@@ -9,6 +25,7 @@ const client = new ApiClient({
 });
 
 export function PromoCodesPage() {
+  const { t } = useTranslation();
   const [codes, setCodes] = useState<PromoCode[]>([]);
   const [showModal, setShowModal] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -29,13 +46,13 @@ export function PromoCodesPage() {
         const data = await client.listPromoCodes();
         setCodes(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load promo codes");
+        setError(err instanceof Error ? err.message : t("admin.promoCodes.loadFailed"));
       } finally {
         setIsLoading(false);
       }
     };
     void load();
-  }, []);
+  }, [t]);
 
   const openCreate = () => {
     setEditingId(null);
@@ -58,7 +75,7 @@ export function PromoCodesPage() {
     const code = form.code.trim();
     const value = Number(form.value);
     if (!code || !Number.isFinite(value)) {
-      setError("Code and value are required.");
+      setError(t("admin.promoCodes.form.required"));
       return;
     }
 
@@ -83,7 +100,7 @@ export function PromoCodesPage() {
       }
       setShowModal(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save promo code");
+      setError(err instanceof Error ? err.message : t("admin.promoCodes.saveFailed"));
     }
   };
 
@@ -93,84 +110,89 @@ export function PromoCodesPage() {
       await client.deletePromoCode(id);
       setCodes((prev) => prev.filter((item) => item.id !== id));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to delete promo code");
+      setError(err instanceof Error ? err.message : t("admin.promoCodes.deleteFailed"));
     }
   };
 
   return (
-    <section>
-      <div className="page-header">
-        <h1>Promo Codes</h1>
-        <button className="primary" onClick={openCreate}>
-          Create Promo Code
-        </button>
-      </div>
-
+    <PageShell
+      title={t("admin.promoCodes.title")}
+      subtitle={t("admin.promoCodes.subtitle")}
+      actions={
+        <Button onClick={openCreate}>{t("admin.promoCodes.create")}</Button>
+      }
+    >
       {error && <div className="error-banner">{error}</div>}
       {isLoading ? (
-        <p>Loading promo codes...</p>
+        <p>{t("admin.promoCodes.loading")}</p>
       ) : (
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>Code</th>
-            <th>Type</th>
-            <th>Value</th>
-            <th>Active</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {codes.map((promo) => (
-            <tr key={promo.id}>
-              <td>{promo.code}</td>
-              <td>{promo.type}</td>
-              <td>{promo.value}</td>
-              <td>{promo.is_active ? "Yes" : "No"}</td>
-              <td>
-                <button className="link" onClick={() => openEdit(promo)}>
-                  Edit
-                </button>
-                <button className="link danger" onClick={() => handleDelete(promo.id)}>
-                  Delete
-                </button>
-              </td>
-            </tr>
-          ))}
-          {codes.length === 0 && (
-            <tr>
-              <td colSpan={5}>No promo codes yet.</td>
-            </tr>
-          )}
-        </tbody>
-      </table>
+        <Table>
+          <TableHead>
+            <TableRow>
+              <TableHeaderCell>{t("admin.promoCodes.table.code")}</TableHeaderCell>
+              <TableHeaderCell>{t("admin.promoCodes.table.type")}</TableHeaderCell>
+              <TableHeaderCell>{t("admin.promoCodes.table.value")}</TableHeaderCell>
+              <TableHeaderCell>{t("admin.promoCodes.table.active")}</TableHeaderCell>
+              <TableHeaderCell />
+            </TableRow>
+          </TableHead>
+          <tbody>
+            {codes.map((promo) => (
+              <TableRow key={promo.id}>
+                <TableCell>{promo.code}</TableCell>
+                <TableCell>{promo.type}</TableCell>
+                <TableCell>{formatNumber(promo.value)}</TableCell>
+                <TableCell>{promo.is_active ? t("common.yes") : t("common.no")}</TableCell>
+                <TableCell>
+                  <div className="flex gap-2">
+                    <Button variant="ghost" onClick={() => openEdit(promo)}>
+                      {t("common.edit")}
+                    </Button>
+                    <Button variant="danger" onClick={() => handleDelete(promo.id)}>
+                      {t("common.delete")}
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+            {codes.length === 0 && (
+              <TableRow>
+                <TableCell className="text-center" colSpan={5}>
+                  {t("admin.promoCodes.empty")}
+                </TableCell>
+              </TableRow>
+            )}
+          </tbody>
+        </Table>
       )}
 
-      {showModal && (
-        <div className="modal-backdrop">
-          <div className="modal">
-            <h2>{editingId ? "Edit Promo Code" : "Create Promo Code"}</h2>
+      <DialogRoot open={showModal} onOpenChange={setShowModal}>
+        <DialogContent>
+          <DialogTitle>
+            {editingId ? t("admin.promoCodes.editTitle") : t("admin.promoCodes.createTitle")}
+          </DialogTitle>
+          <div className="grid gap-3">
             <label>
-              Code
-              <input
+              {t("admin.promoCodes.form.code")}
+              <Input
                 type="text"
                 value={form.code}
                 onChange={(event) => setForm({ ...form, code: event.target.value })}
               />
             </label>
             <label>
-              Type
-              <select
+              {t("admin.promoCodes.form.type")}
+              <Select
                 value={form.type}
                 onChange={(event) => setForm({ ...form, type: event.target.value })}
               >
                 <option value="PERCENT">PERCENT</option>
                 <option value="FIXED">FIXED</option>
-              </select>
+              </Select>
             </label>
             <label>
-              Value
-              <input
+              {t("admin.promoCodes.form.value")}
+              <Input
                 type="number"
                 value={form.value}
                 onChange={(event) =>
@@ -178,25 +200,23 @@ export function PromoCodesPage() {
                 }
               />
             </label>
-            <label className="checkbox">
+            <label className="flex items-center gap-2 text-sm">
               <input
                 type="checkbox"
                 checked={form.is_active}
                 onChange={(event) => setForm({ ...form, is_active: event.target.checked })}
               />
-              Active
+              {t("admin.promoCodes.form.active")}
             </label>
-            <div className="modal-actions">
-              <button className="secondary" onClick={() => setShowModal(false)}>
-                Cancel
-              </button>
-              <button className="primary" onClick={handleSubmit}>
-                Save
-              </button>
-            </div>
           </div>
-        </div>
-      )}
-    </section>
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
+            <Button variant="secondary" onClick={() => setShowModal(false)}>
+              {t("common.cancel")}
+            </Button>
+            <Button onClick={handleSubmit}>{t("common.save")}</Button>
+          </div>
+        </DialogContent>
+      </DialogRoot>
+    </PageShell>
   );
 }

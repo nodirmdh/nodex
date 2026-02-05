@@ -30,6 +30,9 @@ export type CourierOrderDetails = {
   address_house: string | null;
   address_entrance: string | null;
   address_apartment: string | null;
+  handoffCode?: string | null;
+  deliveryCode?: string | null;
+  pickupCode?: string | null;
   items: Array<{
     menu_item_id: string;
     quantity: number;
@@ -46,7 +49,9 @@ export type CourierProfile = {
   full_name: string | null;
   phone: string | null;
   telegram_username: string | null;
-  photo_url: string | null;
+  photo_url?: string | null;
+  avatar_url: string | null;
+  avatar_file_id: string | null;
   delivery_method: string | null;
   is_available: boolean;
   max_active_orders: number;

@@ -1,55 +1,201 @@
 import { useEffect, useMemo, useState } from "react";
 import { BrowserRouter, Link, Route, Routes, useParams } from "react-router-dom";
+import { MapContainer, Marker, TileLayer, useMapEvents } from "react-leaflet";
 
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Input,
+  PageShell,
+  Select,
+  Skeleton,
+  StatusBadge,
+  Table,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+  Textarea,
+  toast,
+} from "@nodex/ui";
+import { useTranslation } from "react-i18next";
+import { LANGUAGES, formatDateTime, formatNumber, getLanguage, setLanguage, translateFulfillment, translatePayment, translateStatus } from "@nodex/i18n";
+import {
+  BarChart3,
+  ClipboardList,
+  Gift,
+  LayoutDashboard,
+  LifeBuoy,
+  Package,
+  Settings,
+} from "lucide-react";
 import { ApiClient, MenuItem, VendorOrderDetails, VendorOrderSummary } from "./api/client";
+import { resolveAssetUrl } from "./utils/resolveAssetUrl";
+
+const DEFAULT_CENTER = { lat: 42.842, lng: 59.012 };
+const DEFAULT_ZOOM = 13;
+const WEEKDAYS: Array<ScheduleEntry["weekday"]> = [
+  "MON",
+  "TUE",
+  "WED",
+  "THU",
+  "FRI",
+  "SAT",
+  "SUN",
+];
+
+type ScheduleEntry = {
+  weekday: "MON" | "TUE" | "WED" | "THU" | "FRI" | "SAT" | "SUN";
+  open_time: string | null;
+  close_time: string | null;
+  closed: boolean;
+  is24h: boolean;
+};
 
 const client = new ApiClient();
+const isDevMode = client.isDevMode();
 
 function AppLayout({
   children,
   vendorId,
   onVendorIdChange,
+  showVendorId,
+  onLogout,
 }: {
   children: React.ReactNode;
   vendorId: string;
   onVendorIdChange: (value: string) => void;
+  showVendorId: boolean;
+  onLogout?: () => void;
 }) {
+  const { t } = useTranslation();
   useEffect(() => {
     client.setVendorId(vendorId || null);
   }, [vendorId]);
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="logo">Nodex Vendor</div>
-        <div className="vendor-select">
-          <label>Vendor ID (DEV)</label>
-          <input
-            type="text"
-            value={vendorId}
-            onChange={(event) => onVendorIdChange(event.target.value)}
-            placeholder="vendor uuid"
-          />
+    <div className="min-h-screen bg-transparent text-slate-900">
+      <aside className="fixed left-0 top-0 flex h-full w-64 flex-col gap-6 border-r border-slate-100 bg-white/90 px-6 py-8 backdrop-blur">
+        <div className="flex items-center gap-3 text-lg font-semibold">
+          <LayoutDashboard className="h-5 w-5 text-sky-600" />
+          {t("vendor.title")}
         </div>
-        <nav className="nav">
-          <Link to="/dashboard">Home</Link>
-          <Link to="/orders">Orders</Link>
-          <Link to="/promotions">Promotions</Link>
-          <Link to="/stats">Statistics</Link>
-          <Link to="/menu">Menu</Link>
-          <Link to="/account">Account</Link>
-          <Link to="/support">Support</Link>
+        {showVendorId && (
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-slate-400">{t("vendor.vendorId")}</label>
+            <Input
+              value={vendorId}
+              onChange={(event) => onVendorIdChange(event.target.value)}
+              placeholder={t("vendor.vendorIdPlaceholder")}
+            />
+          </div>
+        )}
+        <div className="space-y-2">
+          <label className="text-xs font-semibold text-slate-400">{t("client.language")}</label>
+          <Select
+            value={getLanguage()}
+            onChange={(event) => setLanguage(event.target.value as "ru" | "uz" | "kaa" | "en")}
+          >
+            {LANGUAGES.map((lang) => (
+              <option key={lang.code} value={lang.code}>
+                {lang.label}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <nav className="flex flex-col gap-2 text-sm">
+          <Link className="flex items-center gap-2 rounded-xl px-3 py-2 text-slate-600 hover:bg-slate-100" to="/dashboard">
+            <LayoutDashboard className="h-4 w-4" />
+            {t("nav.home")}
+          </Link>
+          <Link className="flex items-center gap-2 rounded-xl px-3 py-2 text-slate-600 hover:bg-slate-100" to="/orders">
+            <ClipboardList className="h-4 w-4" />
+            {t("nav.orders")}
+          </Link>
+          <Link className="flex items-center gap-2 rounded-xl px-3 py-2 text-slate-600 hover:bg-slate-100" to="/promotions">
+            <Gift className="h-4 w-4" />
+            {t("nav.promotions")}
+          </Link>
+          <Link className="flex items-center gap-2 rounded-xl px-3 py-2 text-slate-600 hover:bg-slate-100" to="/stats">
+            <BarChart3 className="h-4 w-4" />
+            {t("nav.statistics")}
+          </Link>
+          <Link className="flex items-center gap-2 rounded-xl px-3 py-2 text-slate-600 hover:bg-slate-100" to="/menu">
+            <Package className="h-4 w-4" />
+            {t("nav.menu")}
+          </Link>
+          <Link className="flex items-center gap-2 rounded-xl px-3 py-2 text-slate-600 hover:bg-slate-100" to="/account">
+            <Settings className="h-4 w-4" />
+            {t("nav.account")}
+          </Link>
+          <Link className="flex items-center gap-2 rounded-xl px-3 py-2 text-slate-600 hover:bg-slate-100" to="/support">
+            <LifeBuoy className="h-4 w-4" />
+            {t("nav.support")}
+          </Link>
         </nav>
+        {onLogout && (
+          <Button variant="secondary" onClick={onLogout}>
+            {t("common.logout")}
+          </Button>
+        )}
       </aside>
-      <main className="content">{children}</main>
+      <main className="ml-64 px-10 py-8">{children}</main>
+    </div>
+  );
+}
+
+function buildDefaultSchedule(): ScheduleEntry[] {
+  return WEEKDAYS.map((weekday) => ({
+    weekday,
+    open_time: "09:00",
+    close_time: "21:00",
+    closed: false,
+    is24h: false,
+  }));
+}
+
+function LocationPicker({
+  lat,
+  lng,
+  onChange,
+}: {
+  lat: number | null;
+  lng: number | null;
+  onChange: (next: { lat: number; lng: number }) => void;
+}) {
+  const position = lat !== null && lng !== null ? { lat, lng } : DEFAULT_CENTER;
+
+  function ClickHandler() {
+    useMapEvents({
+      click: (event) => onChange({ lat: event.latlng.lat, lng: event.latlng.lng }),
+    });
+    return null;
+  }
+
+  return (
+    <div className="overflow-hidden rounded-2xl border border-slate-200">
+      <MapContainer
+        center={position}
+        zoom={DEFAULT_ZOOM}
+        className="h-64 w-full"
+        scrollWheelZoom={false}
+      >
+        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        <ClickHandler />
+        {lat !== null && lng !== null && <Marker position={position} />}
+      </MapContainer>
     </div>
   );
 }
 
 export function App() {
+  const isDevMode = client.isDevMode();
   const [vendorId, setVendorId] = useState<string>(
     window.localStorage.getItem("nodex_vendor_id") ?? "",
   );
+  const [token, setToken] = useState<string | null>(client.getToken());
 
   useEffect(() => {
     if (vendorId) {
@@ -57,9 +203,32 @@ export function App() {
     }
   }, [vendorId]);
 
+  if (!isDevMode && !token) {
+    return (
+      <VendorLogin
+        onSuccess={(newToken) => {
+          client.setToken(newToken);
+          setToken(newToken);
+        }}
+      />
+    );
+  }
+
   return (
     <BrowserRouter>
-      <AppLayout vendorId={vendorId} onVendorIdChange={setVendorId}>
+      <AppLayout
+        vendorId={vendorId}
+        onVendorIdChange={setVendorId}
+        showVendorId={isDevMode}
+        onLogout={
+          isDevMode
+            ? undefined
+            : () => {
+                client.setToken(null);
+                setToken(null);
+              }
+        }
+      >
         <Routes>
           <Route path="/" element={<DashboardPage vendorId={vendorId} />} />
           <Route path="/dashboard" element={<DashboardPage vendorId={vendorId} />} />
@@ -76,7 +245,57 @@ export function App() {
   );
 }
 
+function VendorLogin({ onSuccess }: { onSuccess: (token: string) => void }) {
+  const { t } = useTranslation();
+  const [login, setLogin] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+
+  return (
+    <div className="min-h-screen bg-slate-50">
+      <div className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-6 py-12">
+        <Card className="space-y-4">
+          <h1 className="text-lg font-semibold">{t("vendor.loginTitle")}</h1>
+          <label className="text-sm">
+            {t("admin.vendors.form.login")}
+            <Input value={login} onChange={(event) => setLogin(event.target.value)} />
+          </label>
+          <label className="text-sm">
+            {t("admin.vendors.form.password")}
+            <Input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+            />
+          </label>
+          {error && <div className="text-sm text-rose-500">{error}</div>}
+          <Button
+            disabled={isLoading}
+            onClick={async () => {
+              setIsLoading(true);
+              setError(null);
+              try {
+                const result = await client.login(login.trim(), password);
+                onSuccess(result.token);
+                toast.success(t("common.success"));
+              } catch (err) {
+                setError(err instanceof Error ? err.message : t("errors.loginFailed"));
+              } finally {
+                setIsLoading(false);
+              }
+            }}
+          >
+            {t("common.login")}
+          </Button>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 function OrdersPage({ vendorId }: { vendorId: string }) {
+  const { t } = useTranslation();
   const [orders, setOrders] = useState<VendorOrderSummary[]>([]);
   const [tab, setTab] = useState<"active" | "history">("active");
   const [error, setError] = useState<string | null>(null);
@@ -86,7 +305,7 @@ function OrdersPage({ vendorId }: { vendorId: string }) {
     setIsLoading(true);
     setError(null);
     try {
-      if (!vendorId) {
+      if (isDevMode && !vendorId) {
         setOrders([]);
         setIsLoading(false);
         return;
@@ -94,7 +313,9 @@ function OrdersPage({ vendorId }: { vendorId: string }) {
       const data = await client.listOrders({ status: tab });
       setOrders(data.orders);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load orders");
+      const message = err instanceof Error ? err.message : t("errors.loadOrders");
+      setError(message);
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -105,60 +326,62 @@ function OrdersPage({ vendorId }: { vendorId: string }) {
   }, [vendorId, tab]);
 
   return (
-    <section>
-      <div className="page-header">
-        <h1>Orders</h1>
-        <button className="secondary" onClick={() => void loadOrders()}>
-          Refresh
-        </button>
+    <PageShell
+      title={t("vendor.ordersTitle")}
+      subtitle={t("vendor.ordersSubtitle")}
+      actions={<Button variant="secondary" onClick={() => void loadOrders()}>{t("common.refresh")}</Button>}
+    >
+      <div className="flex gap-2">
+        <Button variant={tab === "active" ? "primary" : "secondary"} onClick={() => setTab("active")}>
+          {t("vendor.active")}
+        </Button>
+        <Button variant={tab === "history" ? "primary" : "secondary"} onClick={() => setTab("history")}>
+          {t("vendor.history")}
+        </Button>
       </div>
 
-      <div className="tabs">
-        <button className={tab === "active" ? "active" : ""} onClick={() => setTab("active")}>
-          Active
-        </button>
-        <button className={tab === "history" ? "active" : ""} onClick={() => setTab("history")}>
-          History
-        </button>
-      </div>
-
-      {error && <div className="error-banner">{error}</div>}
-      {!vendorId && <div className="error-banner">Set vendor ID to load orders.</div>}
+      {error && <div className="text-sm text-rose-500">{error}</div>}
+      {isDevMode && !vendorId && <div className="text-sm text-rose-500">{t("errors.vendorIdRequired")}</div>}
       {isLoading ? (
-        <p>Loading orders...</p>
+        <p>{t("common.loading")}</p>
       ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Order</th>
-              <th>Status</th>
-              <th>Fulfillment</th>
-              <th>Total</th>
-              <th>Created</th>
-              <th />
-            </tr>
-          </thead>
+        <Table>
+          <TableHead>
+            <TableRow>
+              <TableHeaderCell>{t("courier.order")}</TableHeaderCell>
+              <TableHeaderCell>{t("common.status")}</TableHeaderCell>
+              <TableHeaderCell>{t("fields.type")}</TableHeaderCell>
+              <TableHeaderCell>{t("common.total")}</TableHeaderCell>
+              <TableHeaderCell>{t("fields.createdAt")}</TableHeaderCell>
+              <TableHeaderCell />
+            </TableRow>
+          </TableHead>
           <tbody>
             {orders.map((order) => (
-              <tr key={order.order_id}>
-                <td>{order.order_id}</td>
-                <td>{order.status}</td>
-                <td>{order.fulfillment_type}</td>
-                <td>{order.total}</td>
-                <td>{new Date(order.created_at).toLocaleString()}</td>
-                <td>
-                  <Link to={`/orders/${order.order_id}`}>View</Link>
-                </td>
-              </tr>
+              <TableRow key={order.order_id}>
+                <TableCell>{order.order_id}</TableCell>
+                <TableCell>
+                  <StatusBadge status={order.status} />
+                </TableCell>
+                <TableCell>{translateFulfillment(order.fulfillment_type)}</TableCell>
+                <TableCell>{formatNumber(order.total)}</TableCell>
+                <TableCell>{formatDateTime(order.created_at)}</TableCell>
+                <TableCell>
+                  <Link className="text-sky-600" to={`/orders/${order.order_id}`}>
+                    {t("common.view")}
+                  </Link>
+                </TableCell>
+              </TableRow>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
-    </section>
+    </PageShell>
   );
 }
 
 function DashboardPage({ vendorId }: { vendorId: string }) {
+  const { t } = useTranslation();
   const [data, setData] = useState<Awaited<ReturnType<typeof client.getDashboard>> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -168,7 +391,7 @@ function DashboardPage({ vendorId }: { vendorId: string }) {
       setIsLoading(true);
       setError(null);
       try {
-        if (!vendorId) {
+        if (isDevMode && !vendorId) {
           setData(null);
           setIsLoading(false);
           return;
@@ -176,7 +399,7 @@ function DashboardPage({ vendorId }: { vendorId: string }) {
         const response = await client.getDashboard("7d");
         setData(response);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load dashboard");
+        setError(err instanceof Error ? err.message : t("errors.loadDashboard"));
       } finally {
         setIsLoading(false);
       }
@@ -186,45 +409,43 @@ function DashboardPage({ vendorId }: { vendorId: string }) {
 
   return (
     <section>
-      <div className="page-header">
-        <h1>Dashboard</h1>
-      </div>
+      <h2 className="text-xl font-semibold text-slate-900">{t("nav.dashboard")}</h2>
       {error && <div className="error-banner">{error}</div>}
-      {!vendorId && <div className="error-banner">Set vendor ID to load dashboard.</div>}
+      {isDevMode && !vendorId && <div className="error-banner">{t("errors.vendorIdRequired")}</div>}
       {isLoading ? (
-        <p>Loading dashboard...</p>
+        <p>{t("common.loading")}</p>
       ) : data ? (
         <>
           <div className="details-grid">
             <div>
-              <strong>Revenue</strong>
-              <div>{data.revenue}</div>
+              <strong>{t("vendor.revenue")}</strong>
+              <div>{formatNumber(data.revenue)}</div>
             </div>
             <div>
-              <strong>Completed</strong>
-              <div>{data.completed_count}</div>
+              <strong>{t("vendor.completed")}</strong>
+              <div>{formatNumber(data.completed_count)}</div>
             </div>
             <div>
-              <strong>Average check</strong>
-              <div>{data.average_check}</div>
+              <strong>{t("vendor.averageCheck")}</strong>
+              <div>{formatNumber(data.average_check)}</div>
             </div>
             <div>
-              <strong>Rating</strong>
+              <strong>{t("fields.rating")}</strong>
               <div>
-                {data.rating_avg.toFixed(1)} ({data.rating_count})
+                {data.rating_avg.toFixed(1)} ({formatNumber(data.rating_count)})
               </div>
             </div>
           </div>
-          <h2>Last 7 days</h2>
+          <h2>{t("vendor.last7Days")}</h2>
           {data.daily.length === 0 ? (
-            <p>No data.</p>
+            <p>{t("empty.noData")}</p>
           ) : (
             <ul className="event-list">
               {data.daily.map((entry) => (
                 <li key={entry.date}>
                   <span>{entry.date}</span>
                   <span>
-                    {entry.revenue} / {entry.count} orders
+                    {formatNumber(entry.revenue)} / {formatNumber(entry.count)} {t("nav.orders")}
                   </span>
                 </li>
               ))}
@@ -232,13 +453,14 @@ function DashboardPage({ vendorId }: { vendorId: string }) {
           )}
         </>
       ) : (
-        <p>No data.</p>
+        <p>{t("empty.noData")}</p>
       )}
     </section>
   );
 }
 
 function PromotionsPage({ vendorId }: { vendorId: string }) {
+  const { t } = useTranslation();
   const [promotions, setPromotions] = useState<
     Array<{
       promotion_id: string;
@@ -318,7 +540,7 @@ function PromotionsPage({ vendorId }: { vendorId: string }) {
     setIsLoading(true);
     setError(null);
     try {
-      if (!vendorId) {
+      if (isDevMode && !vendorId) {
         setPromotions([]);
         setMenuItems([]);
         setIsLoading(false);
@@ -331,7 +553,7 @@ function PromotionsPage({ vendorId }: { vendorId: string }) {
       setPromotions(promoData.promotions);
       setMenuItems(menuData);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load promotions");
+      setError(err instanceof Error ? err.message : t("errors.loadPromotions"));
     } finally {
       setIsLoading(false);
     }
@@ -354,19 +576,23 @@ function PromotionsPage({ vendorId }: { vendorId: string }) {
   const buildSummary = (promo: (typeof promotions)[number]) => {
     switch (promo.promo_type) {
       case "PERCENT":
-        return `${promo.value_numeric}% on ${promo.items.length} item(s)`;
+        return t("vendor.promotions.summary.percent", { value: promo.value_numeric, count: promo.items.length });
       case "FIXED_PRICE":
-        return `Fixed ${promo.value_numeric} for ${promo.items.length} item(s)`;
+        return t("vendor.promotions.summary.fixed", { value: promo.value_numeric, count: promo.items.length });
       case "COMBO":
-        return `Combo ${promo.combo_items.length} item(s) for ${promo.value_numeric}`;
+        return t("vendor.promotions.summary.combo", { count: promo.combo_items.length, value: promo.value_numeric });
       case "BUY_X_GET_Y":
         return promo.buy_x_get_y
-          ? `Buy ${promo.buy_x_get_y.buy_quantity} get ${promo.buy_x_get_y.get_quantity} (${promo.buy_x_get_y.discount_percent}%)`
-          : "Buy X Get Y";
+          ? t("vendor.promotions.summary.buyXGetY", {
+              buy: promo.buy_x_get_y.buy_quantity,
+              get: promo.buy_x_get_y.get_quantity,
+              percent: promo.buy_x_get_y.discount_percent,
+            })
+          : t("vendor.promotions.summary.buyXGetYFallback");
       case "GIFT":
         return promo.gift
-          ? `Gift ${promo.gift.gift_quantity} over ${promo.gift.min_order_amount}`
-          : "Gift";
+          ? t("vendor.promotions.summary.gift", { qty: promo.gift.gift_quantity, min: promo.gift.min_order_amount })
+          : t("vendor.promotions.summary.giftFallback");
       default:
         return promo.promo_type;
     }
@@ -431,28 +657,28 @@ function PromotionsPage({ vendorId }: { vendorId: string }) {
   const validateForm = () => {
     if (form.promo_type === "PERCENT" || form.promo_type === "FIXED_PRICE") {
       if (!Number.isFinite(Number(form.value_numeric))) {
-        return "Value is required.";
+        return t("vendor.promotions.validation.valueRequired");
       }
       if (form.items.length === 0) {
-        return "Select at least one menu item.";
+        return t("vendor.promotions.validation.itemsRequired");
       }
     }
     if (form.promo_type === "COMBO") {
       if (!Number.isFinite(Number(form.value_numeric))) {
-        return "Combo price is required.";
+        return t("vendor.promotions.validation.comboPriceRequired");
       }
       if (form.combo_items.length === 0) {
-        return "Add combo items.";
+        return t("vendor.promotions.validation.comboItemsRequired");
       }
     }
     if (form.promo_type === "BUY_X_GET_Y") {
       if (!form.buy_x_get_y.buy_item_id || !form.buy_x_get_y.get_item_id) {
-        return "Select buy and get items.";
+        return t("vendor.promotions.validation.buyGetRequired");
       }
     }
     if (form.promo_type === "GIFT") {
       if (!form.gift.gift_item_id) {
-        return "Select gift item.";
+        return t("vendor.promotions.validation.giftRequired");
       }
     }
     return null;
@@ -499,86 +725,112 @@ function PromotionsPage({ vendorId }: { vendorId: string }) {
   };
 
   return (
-    <section>
-      <div className="page-header">
-        <h1>Promotions</h1>
-        <button className="secondary" onClick={() => void loadPromotions()}>
-          Refresh
-        </button>
-      </div>
-      {error && <div className="error-banner">{error}</div>}
-      {!vendorId && <div className="error-banner">Set vendor ID to manage promotions.</div>}
+    <PageShell
+      title={t("vendor.promotionsTitle")}
+      subtitle={t("vendor.promotionsSubtitle")}
+      actions={
+        <Button variant="secondary" onClick={() => void loadPromotions()}>
+          {t("common.refresh")}
+        </Button>
+      }
+    >
+      {error && (
+        <Card className="border-rose-200 bg-rose-50 text-rose-700">
+          {error}
+        </Card>
+      )}
+      {isDevMode && !vendorId && (
+        <Card className="border-amber-200 bg-amber-50 text-amber-700">
+          {t("errors.vendorIdRequired")}
+        </Card>
+      )}
 
-      <div className="panel">
-        <h2>{editingId ? "Edit promotion" : "Create promotion"}</h2>
-        <div className="details-grid">
-          <label>
-            Type
-            <select
+      <Card>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-lg font-semibold text-slate-900">
+              {editingId ? t("vendor.editPromotion") : t("vendor.createPromotion")}
+            </div>
+            <div className="text-sm text-slate-500">
+              {t("vendor.promotionHint")}
+            </div>
+          </div>
+          <Badge variant={form.is_active ? "success" : "warning"}>
+            {form.is_active ? t("vendor.promotions.status.active") : t("vendor.promotions.status.inactive")}
+          </Badge>
+        </div>
+        <div className="mt-6 grid gap-4 md:grid-cols-3">
+          <label className="text-sm text-slate-600">
+            {t("fields.type")}
+            <Select
               value={form.promo_type}
               onChange={(event) => setForm({ ...form, promo_type: event.target.value })}
+              className="mt-1"
             >
-              <option value="PERCENT">Percent</option>
-              <option value="FIXED_PRICE">Fixed price</option>
-              <option value="COMBO">Combo</option>
-              <option value="BUY_X_GET_Y">Buy X Get Y</option>
-              <option value="GIFT">Gift</option>
-            </select>
+              <option value="PERCENT">{t("promo.percent")}</option>
+              <option value="FIXED_PRICE">{t("promo.fixedPrice")}</option>
+              <option value="COMBO">{t("promo.combo")}</option>
+              <option value="BUY_X_GET_Y">{t("promo.buyXGetY")}</option>
+              <option value="GIFT">{t("promo.gift")}</option>
+            </Select>
           </label>
-          <label>
-            Priority
-            <input
+          <label className="text-sm text-slate-600">
+            {t("promo.priority")}
+            <Input
               type="number"
               value={form.priority}
               onChange={(event) => setForm({ ...form, priority: event.target.value })}
+              className="mt-1"
             />
           </label>
-          <label className="checkbox">
+          <label className="flex items-center gap-2 text-sm text-slate-600">
             <input
               type="checkbox"
               checked={form.is_active}
               onChange={(event) => setForm({ ...form, is_active: event.target.checked })}
+              className="h-4 w-4 rounded border-slate-300 text-sky-600"
             />
-            Active
+            {t("fields.active")}
           </label>
-          <label>
-            Starts at
-            <input
+          <label className="text-sm text-slate-600">
+            {t("promo.startsAt")}
+            <Input
               type="datetime-local"
               value={form.starts_at}
               onChange={(event) => setForm({ ...form, starts_at: event.target.value })}
+              className="mt-1"
             />
           </label>
-          <label>
-            Ends at
-            <input
+          <label className="text-sm text-slate-600">
+            {t("promo.endsAt")}
+            <Input
               type="datetime-local"
               value={form.ends_at}
               onChange={(event) => setForm({ ...form, ends_at: event.target.value })}
+              className="mt-1"
             />
           </label>
         </div>
 
         {(form.promo_type === "PERCENT" || form.promo_type === "FIXED_PRICE") && (
-          <div className="panel">
-            <label>
-              Value
-              <input
+          <div className="mt-6 grid gap-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+            <label className="text-sm text-slate-600">
+              {t("promo.value")}
+              <Input
                 type="number"
                 value={form.value_numeric}
                 onChange={(event) => setForm({ ...form, value_numeric: event.target.value })}
+                className="mt-1"
               />
             </label>
-            <div className="row">
-              <input
-                placeholder="Search menu items..."
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-            </div>
-            <div className="grid-2">
+            <Input
+              placeholder={t("promo.searchMenu")}
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            <div className="grid gap-2 md:grid-cols-2">
               {filteredMenuItems.map((item) => (
-                <label key={item.id} className="checkbox">
+                <label key={item.id} className="flex items-center gap-2 text-sm text-slate-600">
                   <input
                     type="checkbox"
                     checked={form.items.includes(item.id)}
@@ -588,6 +840,7 @@ function PromotionsPage({ vendorId }: { vendorId: string }) {
                         : form.items.filter((id) => id !== item.id);
                       setForm({ ...form, items: next });
                     }}
+                    className="h-4 w-4 rounded border-slate-300 text-sky-600"
                   />
                   {item.title}
                 </label>
@@ -597,30 +850,29 @@ function PromotionsPage({ vendorId }: { vendorId: string }) {
         )}
 
         {form.promo_type === "COMBO" && (
-          <div className="panel">
-            <label>
-              Combo price
-              <input
+          <div className="mt-6 grid gap-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+            <label className="text-sm text-slate-600">
+              {t("promo.comboPrice")}
+              <Input
                 type="number"
                 value={form.value_numeric}
                 onChange={(event) => setForm({ ...form, value_numeric: event.target.value })}
+                className="mt-1"
               />
             </label>
-            <div className="row">
-              <input
-                placeholder="Search menu items..."
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-              />
-            </div>
-            <div className="grid-2">
+            <Input
+              placeholder={t("promo.searchMenu")}
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            <div className="grid gap-3 md:grid-cols-2">
               {filteredMenuItems.map((item) => {
                 const entry = form.combo_items.find((combo) => combo.menu_item_id === item.id);
                 const qty = entry?.quantity ?? 0;
                 return (
-                  <label key={item.id}>
-                    {item.title}
-                    <input
+                  <label key={item.id} className="flex items-center justify-between gap-3 text-sm text-slate-600">
+                    <span>{item.title}</span>
+                    <Input
                       type="number"
                       min={0}
                       value={qty}
@@ -632,6 +884,7 @@ function PromotionsPage({ vendorId }: { vendorId: string }) {
                         }
                         setForm({ ...form, combo_items: next });
                       }}
+                      className="w-24"
                     />
                   </label>
                 );
@@ -641,144 +894,147 @@ function PromotionsPage({ vendorId }: { vendorId: string }) {
         )}
 
         {form.promo_type === "BUY_X_GET_Y" && (
-          <div className="panel">
-            <div className="details-grid">
-              <label>
-                Buy item
-                <select
-                  value={form.buy_x_get_y.buy_item_id}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      buy_x_get_y: { ...form.buy_x_get_y, buy_item_id: event.target.value },
-                    })
-                  }
-                >
-                  <option value="">Select</option>
-                  {menuItems.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Buy quantity
-                <input
-                  type="number"
-                  value={form.buy_x_get_y.buy_quantity}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      buy_x_get_y: { ...form.buy_x_get_y, buy_quantity: event.target.value },
-                    })
-                  }
-                />
-              </label>
-              <label>
-                Get item
-                <select
-                  value={form.buy_x_get_y.get_item_id}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      buy_x_get_y: { ...form.buy_x_get_y, get_item_id: event.target.value },
-                    })
-                  }
-                >
-                  <option value="">Select</option>
-                  {menuItems.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Get quantity
-                <input
-                  type="number"
-                  value={form.buy_x_get_y.get_quantity}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      buy_x_get_y: { ...form.buy_x_get_y, get_quantity: event.target.value },
-                    })
-                  }
-                />
-              </label>
-              <label>
-                Discount %
-                <input
-                  type="number"
-                  value={form.buy_x_get_y.discount_percent}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      buy_x_get_y: { ...form.buy_x_get_y, discount_percent: event.target.value },
-                    })
-                  }
-                />
-              </label>
-            </div>
+          <div className="mt-6 grid gap-4 rounded-2xl border border-slate-100 bg-slate-50 p-4 md:grid-cols-2">
+            <label className="text-sm text-slate-600">
+              {t("promo.buyItem")}
+              <Select
+                value={form.buy_x_get_y.buy_item_id}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    buy_x_get_y: { ...form.buy_x_get_y, buy_item_id: event.target.value },
+                  })
+                }
+                className="mt-1"
+              >
+                <option value="">Select</option>
+                {menuItems.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label className="text-sm text-slate-600">
+              {t("promo.buyQty")}
+              <Input
+                type="number"
+                value={form.buy_x_get_y.buy_quantity}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    buy_x_get_y: { ...form.buy_x_get_y, buy_quantity: event.target.value },
+                  })
+                }
+                className="mt-1"
+              />
+            </label>
+            <label className="text-sm text-slate-600">
+              {t("promo.getItem")}
+              <Select
+                value={form.buy_x_get_y.get_item_id}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    buy_x_get_y: { ...form.buy_x_get_y, get_item_id: event.target.value },
+                  })
+                }
+                className="mt-1"
+              >
+                <option value="">Select</option>
+                {menuItems.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label className="text-sm text-slate-600">
+              {t("promo.getQty")}
+              <Input
+                type="number"
+                value={form.buy_x_get_y.get_quantity}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    buy_x_get_y: { ...form.buy_x_get_y, get_quantity: event.target.value },
+                  })
+                }
+                className="mt-1"
+              />
+            </label>
+            <label className="text-sm text-slate-600">
+              {t("promo.discountPercent")}
+              <Input
+                type="number"
+                value={form.buy_x_get_y.discount_percent}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    buy_x_get_y: { ...form.buy_x_get_y, discount_percent: event.target.value },
+                  })
+                }
+                className="mt-1"
+              />
+            </label>
           </div>
         )}
 
         {form.promo_type === "GIFT" && (
-          <div className="panel">
-            <div className="details-grid">
-              <label>
-                Gift item
-                <select
-                  value={form.gift.gift_item_id}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      gift: { ...form.gift, gift_item_id: event.target.value },
-                    })
-                  }
-                >
-                  <option value="">Select</option>
-                  {menuItems.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.title}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                Gift quantity
-                <input
-                  type="number"
-                  value={form.gift.gift_quantity}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      gift: { ...form.gift, gift_quantity: event.target.value },
-                    })
-                  }
-                />
-              </label>
-              <label>
-                Min order amount
-                <input
-                  type="number"
-                  value={form.gift.min_order_amount}
-                  onChange={(event) =>
-                    setForm({
-                      ...form,
-                      gift: { ...form.gift, min_order_amount: event.target.value },
-                    })
-                  }
-                />
-              </label>
-            </div>
+          <div className="mt-6 grid gap-4 rounded-2xl border border-slate-100 bg-slate-50 p-4 md:grid-cols-2">
+            <label className="text-sm text-slate-600">
+              {t("promo.giftItem")}
+              <Select
+                value={form.gift.gift_item_id}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    gift: { ...form.gift, gift_item_id: event.target.value },
+                  })
+                }
+                className="mt-1"
+              >
+                <option value="">Select</option>
+                {menuItems.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.title}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label className="text-sm text-slate-600">
+              {t("promo.giftQty")}
+              <Input
+                type="number"
+                value={form.gift.gift_quantity}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    gift: { ...form.gift, gift_quantity: event.target.value },
+                  })
+                }
+                className="mt-1"
+              />
+            </label>
+            <label className="text-sm text-slate-600">
+              {t("promo.minOrder")}
+              <Input
+                type="number"
+                value={form.gift.min_order_amount}
+                onChange={(event) =>
+                  setForm({
+                    ...form,
+                    gift: { ...form.gift, min_order_amount: event.target.value },
+                  })
+                }
+                className="mt-1"
+              />
+            </label>
           </div>
         )}
 
-        <div className="row">
-          <button
-            className="primary"
+        <div className="mt-6 flex flex-wrap gap-2">
+          <Button
             onClick={async () => {
               const validationError = validateForm();
               if (validationError) {
@@ -797,54 +1053,73 @@ function PromotionsPage({ vendorId }: { vendorId: string }) {
                 resetForm();
                 await loadPromotions();
               } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to save promotion");
+            setError(err instanceof Error ? err.message : t("vendor.promotions.saveFailed"));
               } finally {
                 setIsLoading(false);
               }
             }}
           >
-            {editingId ? "Save changes" : "Create"}
-          </button>
+            {editingId ? t("common.save") : t("common.create")}
+          </Button>
           {editingId && (
-            <button className="secondary" onClick={resetForm}>
+            <Button variant="secondary" onClick={resetForm}>
               Cancel
-            </button>
+            </Button>
           )}
         </div>
-      </div>
+      </Card>
 
       {isLoading ? (
-        <p>Loading promotions...</p>
+        <Card>
+          <div className="grid gap-2">
+            <Skeleton className="h-6" />
+            <Skeleton className="h-6" />
+            <Skeleton className="h-6" />
+          </div>
+        </Card>
       ) : promotions.length === 0 ? (
-        <p>No promotions yet.</p>
+        <Card>
+          <EmptyState
+            title={t("empty.noPromotions")}
+            description={t("vendor.noPromotionsHint")}
+          />
+        </Card>
       ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Type</th>
-              <th>Summary</th>
-              <th>Priority</th>
-              <th>Active</th>
-              <th>Starts</th>
-              <th>Ends</th>
-              <th />
-            </tr>
-          </thead>
+        <Table>
+          <TableHead>
+            <TableRow>
+              <TableHeaderCell>{t("fields.type")}</TableHeaderCell>
+              <TableHeaderCell>{t("promo.summary")}</TableHeaderCell>
+              <TableHeaderCell>{t("promo.priority")}</TableHeaderCell>
+              <TableHeaderCell>{t("common.status")}</TableHeaderCell>
+              <TableHeaderCell>{t("promo.startsAt")}</TableHeaderCell>
+              <TableHeaderCell>{t("promo.endsAt")}</TableHeaderCell>
+              <TableHeaderCell />
+            </TableRow>
+          </TableHead>
           <tbody>
             {promotions.map((promo) => (
-              <tr key={promo.promotion_id}>
-                <td>{promo.promo_type}</td>
-                <td>{buildSummary(promo)}</td>
-                <td>{promo.priority}</td>
-                <td>{promo.is_active ? "Yes" : "No"}</td>
-                <td>{promo.starts_at ? new Date(promo.starts_at).toLocaleString() : "-"}</td>
-                <td>{promo.ends_at ? new Date(promo.ends_at).toLocaleString() : "-"}</td>
-                <td>
-                  <button className="secondary" onClick={() => startEdit(promo)}>
-                    Edit
-                  </button>
-                  <button
-                    className="secondary"
+              <TableRow key={promo.promotion_id}>
+                <TableCell>{promo.promo_type}</TableCell>
+                <TableCell>{buildSummary(promo)}</TableCell>
+                <TableCell>{promo.priority}</TableCell>
+                <TableCell>
+                  <Badge variant={promo.is_active ? "success" : "warning"}>
+                    {promo.is_active ? t("vendor.promotions.status.active") : t("vendor.promotions.status.inactive")}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  {promo.starts_at ? new Date(promo.starts_at).toLocaleString() : "-"}
+                </TableCell>
+                <TableCell>
+                  {promo.ends_at ? new Date(promo.ends_at).toLocaleString() : "-"}
+                </TableCell>
+                <TableCell className="space-x-2">
+                  <Button variant="secondary" onClick={() => startEdit(promo)}>
+                    {t("common.edit")}
+                  </Button>
+                  <Button
+                    variant="ghost"
                     onClick={async () => {
                       await client.updatePromotion(promo.promotion_id, {
                         is_active: !promo.is_active,
@@ -852,28 +1127,29 @@ function PromotionsPage({ vendorId }: { vendorId: string }) {
                       await loadPromotions();
                     }}
                   >
-                    {promo.is_active ? "Deactivate" : "Activate"}
-                  </button>
-                  <button
-                    className="link danger"
+                    {promo.is_active ? t("promo.deactivate") : t("promo.activate")}
+                  </Button>
+                  <Button
+                    variant="danger"
                     onClick={async () => {
                       await client.deletePromotion(promo.promotion_id);
                       await loadPromotions();
                     }}
                   >
-                    Delete
-                  </button>
-                </td>
-              </tr>
+                    {t("common.delete")}
+                  </Button>
+                </TableCell>
+              </TableRow>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
-    </section>
+    </PageShell>
   );
 }
 
 function StatisticsPage({ vendorId }: { vendorId: string }) {
+  const { t } = useTranslation();
   const [dashboard, setDashboard] = useState<Awaited<ReturnType<typeof client.getDashboard>> | null>(null);
   const [reviews, setReviews] = useState<Awaited<ReturnType<typeof client.listReviews>>>([]);
   const [error, setError] = useState<string | null>(null);
@@ -884,7 +1160,7 @@ function StatisticsPage({ vendorId }: { vendorId: string }) {
       setIsLoading(true);
       setError(null);
       try {
-        if (!vendorId) {
+        if (isDevMode && !vendorId) {
           setDashboard(null);
           setReviews([]);
           setIsLoading(false);
@@ -894,7 +1170,7 @@ function StatisticsPage({ vendorId }: { vendorId: string }) {
         setDashboard(dash);
         setReviews(rev);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load stats");
+        setError(err instanceof Error ? err.message : t("vendor.stats.loadFailed"));
       } finally {
         setIsLoading(false);
       }
@@ -904,30 +1180,30 @@ function StatisticsPage({ vendorId }: { vendorId: string }) {
 
   return (
     <section>
-      <h1>Statistics</h1>
+      <h1>{t("nav.statistics")}</h1>
       {error && <div className="error-banner">{error}</div>}
-      {!vendorId && <div className="error-banner">Set vendor ID to view statistics.</div>}
+      {isDevMode && !vendorId && <div className="error-banner">{t("errors.vendorIdRequired")}</div>}
       {isLoading ? (
-        <p>Loading stats...</p>
+        <p>{t("vendor.stats.loading")}</p>
       ) : dashboard ? (
         <>
           <div className="details-grid">
             <div>
-              <strong>Gross revenue</strong>
-              <div>{dashboard.revenue}</div>
+              <strong>{t("vendor.stats.grossRevenue")}</strong>
+              <div>{formatNumber(dashboard.revenue)}</div>
             </div>
             <div>
-              <strong>Service fee total</strong>
-              <div>{dashboard.service_fee_total}</div>
+              <strong>{t("vendor.stats.serviceFees")}</strong>
+              <div>{formatNumber(dashboard.service_fee_total)}</div>
             </div>
             <div>
-              <strong>Vendor owes</strong>
-              <div>{dashboard.vendor_owes}</div>
+              <strong>{t("vendor.stats.vendorOwes")}</strong>
+              <div>{formatNumber(dashboard.vendor_owes)}</div>
             </div>
           </div>
-          <h2>Latest reviews</h2>
+          <h2>{t("vendor.stats.latestReviews")}</h2>
           {reviews.length === 0 ? (
-            <p>No reviews.</p>
+            <p>{t("empty.noReviews")}</p>
           ) : (
             <ul className="event-list">
               {reviews.map((review) => (
@@ -942,13 +1218,14 @@ function StatisticsPage({ vendorId }: { vendorId: string }) {
           )}
         </>
       ) : (
-        <p>No data.</p>
+        <p>{t("empty.noData")}</p>
       )}
     </section>
   );
 }
 
 function AccountPage({ vendorId }: { vendorId: string }) {
+  const { t } = useTranslation();
   const [profile, setProfile] = useState<Awaited<ReturnType<typeof client.getProfile>> | null>(null);
   const [form, setForm] = useState({
     name: "",
@@ -959,20 +1236,25 @@ function AccountPage({ vendorId }: { vendorId: string }) {
     email: "",
     inn: "",
     address_text: "",
-    opening_hours: "",
     supports_pickup: false,
+    delivers_self: false,
+    main_image_url: "",
+    gallery_images: [] as string[],
+    timezone: "Asia/Tashkent",
     lat: "",
     lng: "",
   });
+  const [schedule, setSchedule] = useState<ScheduleEntry[]>(buildDefaultSchedule());
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isUploading, setIsUploading] = useState(false);
 
   useEffect(() => {
     const load = async () => {
       setIsLoading(true);
       setError(null);
       try {
-        if (!vendorId) {
+        if (isDevMode && !vendorId) {
           setProfile(null);
           setIsLoading(false);
           return;
@@ -988,13 +1270,27 @@ function AccountPage({ vendorId }: { vendorId: string }) {
           email: data.email ?? "",
           inn: data.inn ?? "",
           address_text: data.address_text ?? "",
-          opening_hours: data.opening_hours ?? "",
           supports_pickup: data.supports_pickup,
+          delivers_self: data.delivers_self ?? false,
+          main_image_url: data.main_image_url ?? "",
+          gallery_images: data.gallery_images ?? [],
+          timezone: data.timezone ?? "Asia/Tashkent",
           lat: data.geo.lat.toString(),
           lng: data.geo.lng.toString(),
         });
+        setSchedule(
+          data.schedule && data.schedule.length > 0
+            ? data.schedule.map((entry) => ({
+                weekday: entry.weekday as ScheduleEntry["weekday"],
+                open_time: entry.open_time ?? null,
+                close_time: entry.close_time ?? null,
+                closed: entry.closed,
+                is24h: entry.is24h,
+              }))
+            : buildDefaultSchedule(),
+        );
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load profile");
+        setError(err instanceof Error ? err.message : t("errors.loadProfile"));
       } finally {
         setIsLoading(false);
       }
@@ -1003,129 +1299,426 @@ function AccountPage({ vendorId }: { vendorId: string }) {
   }, [vendorId]);
 
   return (
-    <section>
-      <h1>Account</h1>
-      {error && <div className="error-banner">{error}</div>}
-      {!vendorId && <div className="error-banner">Set vendor ID to edit profile.</div>}
+    <PageShell
+      title={t("vendor.accountTitle")}
+      subtitle={t("vendor.accountSubtitle")}
+    >
+      {error && (
+        <Card className="border-rose-200 bg-rose-50 text-rose-700">
+          {error}
+        </Card>
+      )}
+      {isDevMode && !vendorId && (
+        <Card className="border-amber-200 bg-amber-50 text-amber-700">
+          {t("errors.vendorIdRequired")}
+        </Card>
+      )}
       {isLoading ? (
-        <p>Loading profile...</p>
+        <Card>
+          <div className="grid gap-2">
+            <Skeleton className="h-6" />
+            <Skeleton className="h-6" />
+            <Skeleton className="h-6" />
+            <Skeleton className="h-6" />
+          </div>
+        </Card>
       ) : (
-        <div className="panel">
-          <div className="details-grid">
-            <label>
-              Name
-              <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-            </label>
-            <label>
-              Owner full name
-              <input
-                value={form.owner_full_name}
-                onChange={(e) => setForm({ ...form, owner_full_name: e.target.value })}
+        <Card>
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="text-sm text-slate-600">
+              {t("fields.name")}
+              <Input
+                value={form.name}
+                onChange={(e) => setForm({ ...form, name: e.target.value })}
+                className="mt-1"
               />
             </label>
-            <label>
-              Phone 1
-              <input value={form.phone1} onChange={(e) => setForm({ ...form, phone1: e.target.value })} />
+            <label className="text-sm text-slate-600">
+              {t("fields.ownerFullName")}
+              <Input
+                value={form.owner_full_name}
+                onChange={(e) => setForm({ ...form, owner_full_name: e.target.value })}
+                className="mt-1"
+              />
             </label>
-            <label>
-              Phone 2
-              <input value={form.phone2} onChange={(e) => setForm({ ...form, phone2: e.target.value })} />
+            <label className="text-sm text-slate-600">
+              {t("fields.phone1")}
+              <Input
+                value={form.phone1}
+                onChange={(e) => setForm({ ...form, phone1: e.target.value })}
+                className="mt-1"
+              />
             </label>
-            <label>
-              Phone 3
-              <input value={form.phone3} onChange={(e) => setForm({ ...form, phone3: e.target.value })} />
+            <label className="text-sm text-slate-600">
+              {t("fields.phone2")}
+              <Input
+                value={form.phone2}
+                onChange={(e) => setForm({ ...form, phone2: e.target.value })}
+                className="mt-1"
+              />
             </label>
-            <label>
-              Email
-              <input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+            <label className="text-sm text-slate-600">
+              {t("fields.phone3")}
+              <Input
+                value={form.phone3}
+                onChange={(e) => setForm({ ...form, phone3: e.target.value })}
+                className="mt-1"
+              />
             </label>
-            <label>
-              INN
-              <input value={form.inn} onChange={(e) => setForm({ ...form, inn: e.target.value })} />
+            <label className="text-sm text-slate-600">
+              {t("fields.email")}
+              <Input
+                value={form.email}
+                onChange={(e) => setForm({ ...form, email: e.target.value })}
+                className="mt-1"
+              />
             </label>
-            <label>
-              Address
-              <input value={form.address_text} onChange={(e) => setForm({ ...form, address_text: e.target.value })} />
+            <label className="text-sm text-slate-600">
+              {t("fields.inn")}
+              <Input
+                value={form.inn}
+                onChange={(e) => setForm({ ...form, inn: e.target.value })}
+                className="mt-1"
+              />
             </label>
-            <label>
-              Opening hours
-              <input value={form.opening_hours} onChange={(e) => setForm({ ...form, opening_hours: e.target.value })} />
+            <label className="text-sm text-slate-600">
+              {t("fields.address")}
+              <Input
+                value={form.address_text}
+                onChange={(e) => setForm({ ...form, address_text: e.target.value })}
+                className="mt-1"
+              />
             </label>
-            <label className="checkbox">
+            <div className="md:col-span-2 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold text-slate-700">{t("fields.mainImage")}</div>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={async (event) => {
+                    const file = event.target.files?.[0];
+                    if (!file) return;
+                    setIsUploading(true);
+                    try {
+                      const result = await client.uploadFile(file);
+                      setForm((prev) => ({ ...prev, main_image_url: result.public_url }));
+                      toast.success(t("common.saved"));
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : t("errors.uploadFailed"));
+                    } finally {
+                      setIsUploading(false);
+                      event.target.value = "";
+                    }
+                  }}
+                  disabled={isUploading}
+                />
+              </div>
+              {form.main_image_url ? (
+                <div className="image-preview">
+                  <img src={resolveAssetUrl(form.main_image_url)} alt={t("fields.mainImage")} />
+                  <Button
+                    variant="secondary"
+                    onClick={() => setForm((prev) => ({ ...prev, main_image_url: "" }))}
+                  >
+                    {t("common.remove")}
+                  </Button>
+                </div>
+              ) : (
+                <div className="text-xs text-slate-500">{t("empty.noImage")}</div>
+              )}
+            </div>
+            <div className="md:col-span-2 space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold text-slate-700">{t("fields.gallery")}</div>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={async (event) => {
+                    const files = Array.from(event.target.files ?? []);
+                    if (files.length === 0) return;
+                    setIsUploading(true);
+                    try {
+                      const uploaded: string[] = [];
+                      for (const file of files) {
+                        const result = await client.uploadFile(file);
+                        uploaded.push(result.public_url);
+                      }
+                      setForm((prev) => ({
+                        ...prev,
+                        gallery_images: [...prev.gallery_images, ...uploaded],
+                      }));
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : t("errors.uploadFailed"));
+                    } finally {
+                      setIsUploading(false);
+                      event.target.value = "";
+                    }
+                  }}
+                  disabled={isUploading}
+                />
+              </div>
+              {form.gallery_images.length === 0 ? (
+                <div className="text-xs text-slate-500">{t("empty.noGallery")}</div>
+              ) : (
+                <div className="image-grid">
+                  {form.gallery_images.map((url) => (
+                    <div key={url} className="image-item">
+                      <img src={resolveAssetUrl(url)} alt={t("fields.gallery")} />
+                      <Button
+                        variant="secondary"
+                        onClick={() =>
+                          setForm((prev) => ({
+                            ...prev,
+                            gallery_images: prev.gallery_images.filter((item) => item !== url),
+                          }))
+                        }
+                      >
+                        {t("common.remove")}
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <label className="text-sm text-slate-600">
+              {t("fields.timezone")}
+              <Input
+                value={form.timezone}
+                onChange={(e) => setForm({ ...form, timezone: e.target.value })}
+                className="mt-1"
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-600">
               <input
                 type="checkbox"
                 checked={form.supports_pickup}
                 onChange={(e) => setForm({ ...form, supports_pickup: e.target.checked })}
+                className="h-4 w-4 rounded border-slate-300 text-sky-600"
               />
-              Supports pickup
+              {t("fields.pickup")}
             </label>
-            <label>
-              Lat
-              <input value={form.lat} onChange={(e) => setForm({ ...form, lat: e.target.value })} />
+            <label className="flex items-center gap-2 text-sm text-slate-600">
+              <input
+                type="checkbox"
+                checked={form.delivers_self}
+                onChange={(e) => setForm({ ...form, delivers_self: e.target.checked })}
+                className="h-4 w-4 rounded border-slate-300 text-sky-600"
+              />
+              {t("fields.deliversSelf")}
             </label>
-            <label>
-              Lng
-              <input value={form.lng} onChange={(e) => setForm({ ...form, lng: e.target.value })} />
+            <label className="text-sm text-slate-600">
+              {t("fields.latitude")}
+              <Input
+                value={form.lat}
+                onChange={(e) => setForm({ ...form, lat: e.target.value })}
+                className="mt-1"
+              />
             </label>
+            <label className="text-sm text-slate-600">
+              {t("fields.longitude")}
+              <Input
+                value={form.lng}
+                onChange={(e) => setForm({ ...form, lng: e.target.value })}
+                className="mt-1"
+              />
+            </label>
+            <div className="md:col-span-2 space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold text-slate-700">{t("fields.location")}</div>
+                <Button
+                  variant="secondary"
+                  onClick={() => {
+                    if (!navigator.geolocation) {
+                      toast.error(t("errors.geolocationUnavailable"));
+                      return;
+                    }
+                    navigator.geolocation.getCurrentPosition(
+                      (pos) => {
+                        setForm((prev) => ({
+                          ...prev,
+                          lat: pos.coords.latitude.toFixed(6),
+                          lng: pos.coords.longitude.toFixed(6),
+                        }));
+                      },
+                      () => toast.error(t("errors.geolocationFailed")),
+                    );
+                  }}
+                >
+                  {t("client.useMyLocation")}
+                </Button>
+              </div>
+              <LocationPicker
+                lat={Number.isFinite(Number(form.lat)) ? Number(form.lat) : null}
+                lng={Number.isFinite(Number(form.lng)) ? Number(form.lng) : null}
+                onChange={(next) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    lat: next.lat.toFixed(6),
+                    lng: next.lng.toFixed(6),
+                  }))
+                }
+              />
+            </div>
           </div>
-          <button
-            className="primary"
-            onClick={async () => {
-              setIsLoading(true);
-              setError(null);
-              try {
-                const updated = await client.updateProfile({
-                  name: form.name,
-                  owner_full_name: form.owner_full_name || null,
-                  phone1: form.phone1 || null,
-                  phone2: form.phone2 || null,
-                  phone3: form.phone3 || null,
-                  email: form.email || null,
-                  inn: form.inn || null,
-                  address_text: form.address_text || null,
-                  opening_hours: form.opening_hours || null,
-                  supports_pickup: form.supports_pickup,
-                  geo: { lat: Number(form.lat), lng: Number(form.lng) },
-                });
-                setProfile(updated);
-              } catch (err) {
-                setError(err instanceof Error ? err.message : "Failed to save profile");
-              } finally {
-                setIsLoading(false);
-              }
-            }}
-          >
-            Save
-          </button>
-        </div>
+          <div className="mt-6 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold text-slate-700">{t("vendor.schedule")}</div>
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  setSchedule((prev) =>
+                    prev.map((entry) => ({
+                      ...entry,
+                      open_time: prev[0]?.open_time ?? entry.open_time,
+                      close_time: prev[0]?.close_time ?? entry.close_time,
+                      closed: prev[0]?.closed ?? entry.closed,
+                      is24h: prev[0]?.is24h ?? entry.is24h,
+                    })),
+                  )
+                }
+              >
+                {t("vendor.copyToAll")}
+              </Button>
+            </div>
+            <div className="grid gap-3">
+              {schedule.map((entry) => (
+                <div
+                  key={entry.weekday}
+                  className="grid items-center gap-2 rounded-xl border border-slate-100 p-3 md:grid-cols-[120px_1fr_1fr_120px_120px]"
+                >
+                  <div className="text-sm font-semibold text-slate-700">{t(`weekday.${entry.weekday}`)}</div>
+                  <Input
+                    type="time"
+                    value={entry.open_time ?? ""}
+                    onChange={(event) =>
+                      setSchedule((prev) =>
+                        prev.map((item) =>
+                          item.weekday === entry.weekday
+                            ? { ...item, open_time: event.target.value }
+                            : item,
+                        ),
+                      )
+                    }
+                  />
+                  <Input
+                    type="time"
+                    value={entry.close_time ?? ""}
+                    onChange={(event) =>
+                      setSchedule((prev) =>
+                        prev.map((item) =>
+                          item.weekday === entry.weekday
+                            ? { ...item, close_time: event.target.value }
+                            : item,
+                        ),
+                      )
+                    }
+                  />
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={entry.closed}
+                      onChange={(event) =>
+                        setSchedule((prev) =>
+                          prev.map((item) =>
+                            item.weekday === entry.weekday
+                              ? { ...item, closed: event.target.checked }
+                              : item,
+                          ),
+                        )
+                      }
+                      className="h-4 w-4 rounded border-slate-300 text-sky-600"
+                    />
+                    {t("vendor.closed")}
+                  </label>
+                  <label className="flex items-center gap-2 text-xs text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={entry.is24h}
+                      onChange={(event) =>
+                        setSchedule((prev) =>
+                          prev.map((item) =>
+                            item.weekday === entry.weekday
+                              ? { ...item, is24h: event.target.checked }
+                              : item,
+                          ),
+                        )
+                      }
+                      className="h-4 w-4 rounded border-slate-300 text-sky-600"
+                    />
+                    {t("vendor.is24h")}
+                  </label>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="mt-6 flex gap-2">
+            <Button
+              onClick={async () => {
+                setIsLoading(true);
+                setError(null);
+                try {
+                  const updated = await client.updateProfile({
+                    name: form.name,
+                    owner_full_name: form.owner_full_name || null,
+                    phone1: form.phone1 || null,
+                    phone2: form.phone2 || null,
+                    phone3: form.phone3 || null,
+                    email: form.email || null,
+                    inn: form.inn || null,
+                    address_text: form.address_text || null,
+                    supports_pickup: form.supports_pickup,
+                    delivers_self: form.delivers_self,
+                    main_image_url: form.main_image_url || null,
+                    gallery_images: form.gallery_images,
+                    timezone: form.timezone || "Asia/Tashkent",
+                    schedule,
+                    geo: { lat: Number(form.lat), lng: Number(form.lng) },
+                  });
+                  setProfile(updated);
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : t("errors.updateProfile"));
+                } finally {
+                  setIsLoading(false);
+                }
+              }}
+            >
+              {t("common.save")}
+            </Button>
+          </div>
+        </Card>
       )}
-    </section>
+    </PageShell>
   );
 }
 
 function SupportPage() {
+  const { t } = useTranslation();
   const username = import.meta.env.VITE_SUPPORT_TG_USERNAME as string | undefined;
   const link = username ? `https://t.me/${username}` : "https://t.me/";
   return (
     <section>
-      <h1>Support</h1>
+      <h1>{t("nav.support")}</h1>
       <button className="primary" onClick={() => window.open(link, "_blank")}>
-        Open Telegram support
+        {t("vendor.openSupport")}
       </button>
     </section>
   );
 }
 
 function OrderDetailsPage({ vendorId }: { vendorId: string }) {
+  const { t } = useTranslation();
   const { orderId } = useParams();
   const [order, setOrder] = useState<VendorOrderDetails | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [pickupCode, setPickupCode] = useState<string | null>(null);
+  const [handoffCode, setHandoffCode] = useState<string | null>(null);
+  const [pickupConfirmCode, setPickupConfirmCode] = useState("");
+  const [deliveryConfirmCode, setDeliveryConfirmCode] = useState("");
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    if (!orderId || !vendorId) {
+    if (!orderId || (isDevMode && !vendorId)) {
       setIsLoading(false);
       return;
     }
@@ -1136,7 +1729,7 @@ function OrderDetailsPage({ vendorId }: { vendorId: string }) {
         const data = await client.getOrder(orderId);
         setOrder(data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load order");
+        setError(err instanceof Error ? err.message : t("errors.loadOrder"));
       } finally {
         setIsLoading(false);
       }
@@ -1145,14 +1738,14 @@ function OrderDetailsPage({ vendorId }: { vendorId: string }) {
   }, [orderId, vendorId]);
 
   if (isLoading) {
-    return <p>Loading order...</p>;
+    return <p>{t("common.loading")}</p>;
   }
 
-  if (!vendorId) {
+  if (isDevMode && !vendorId) {
     return (
       <section>
-        <Link to="/orders">← Back to orders</Link>
-        <p className="error-banner">Set vendor ID to load order details.</p>
+        <Link to="/orders">{t("vendor.ordersBack")}</Link>
+        <p className="error-banner">{t("errors.vendorIdRequired")}</p>
       </section>
     );
   }
@@ -1160,21 +1753,22 @@ function OrderDetailsPage({ vendorId }: { vendorId: string }) {
   if (error || !order) {
     return (
       <section>
-        <Link to="/orders">← Back to orders</Link>
-        <p className="error-banner">{error ?? "Order not found"}</p>
+        <Link to="/orders">{t("vendor.ordersBack")}</Link>
+        <p className="error-banner">{error ?? t("admin.orderDetails.notFound")}</p>
       </section>
     );
   }
 
   const canAccept = order.status === "NEW";
-  const canCooking = order.status === "ACCEPTED";
   const canReady = order.status === "COOKING";
 
   return (
     <section>
-      <Link to="/orders">← Back to orders</Link>
-      <div className="page-header">
-        <h1>Order {order.order_id}</h1>
+      <Link to="/orders">{t("vendor.ordersBack")}</Link>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-xl font-semibold text-slate-900">
+          {t("vendor.orderDetails.title", { id: order.order_id })}
+        </h2>
         <div className="inline">
           <button
             className="secondary"
@@ -1188,31 +1782,12 @@ function OrderDetailsPage({ vendorId }: { vendorId: string }) {
                 setOrder(updated);
               } catch (err) {
                 setActionError(
-                  err instanceof Error ? err.message : "Failed to accept order",
+                  err instanceof Error ? err.message : t("errors.acceptOrder"),
                 );
               }
             }}
           >
-            Accept
-          </button>
-          <button
-            className="secondary"
-            disabled={!canCooking}
-            onClick={async () => {
-              if (!orderId) return;
-              setActionError(null);
-              try {
-                await client.updateOrderStatus(orderId, "COOKING");
-                const updated = await client.getOrder(orderId);
-                setOrder(updated);
-              } catch (err) {
-                setActionError(
-                  err instanceof Error ? err.message : "Failed to update status",
-                );
-              }
-            }}
-          >
-            Cooking
+            {t("vendor.orders.accept")}
           </button>
           <button
             className="primary"
@@ -1222,87 +1797,152 @@ function OrderDetailsPage({ vendorId }: { vendorId: string }) {
               setActionError(null);
               try {
                 const response = await client.updateOrderStatus(orderId, "READY");
-                setPickupCode(response.pickup_code ?? null);
+                setHandoffCode(response.handoff_code ?? null);
                 const updated = await client.getOrder(orderId);
                 setOrder(updated);
               } catch (err) {
                 setActionError(
-                  err instanceof Error ? err.message : "Failed to update status",
+                  err instanceof Error ? err.message : t("vendor.orderDetails.updateFailed"),
                 );
               }
             }}
           >
-            Ready
+            {t("vendor.orders.ready")}
           </button>
         </div>
       </div>
 
       {actionError && <div className="error-banner">{actionError}</div>}
-      {pickupCode && (
+      {handoffCode && (
         <div className="error-banner">
-          Pickup code: <strong>{pickupCode}</strong>
+          {t("vendor.orderDetails.handoffCode")}: <strong>{handoffCode}</strong>
         </div>
+      )}
+
+      {order.fulfillment_type === "PICKUP" && order.status === "READY" && (
+        <Card className="border-amber-200 bg-amber-50">
+          <div className="text-sm font-semibold">{t("vendor.orderDetails.pickupConfirm")}</div>
+          <div className="mt-3 flex gap-2">
+            <Input
+              value={pickupConfirmCode}
+              onChange={(event) => setPickupConfirmCode(event.target.value)}
+              placeholder={t("vendor.orderDetails.pickupCode")}
+            />
+            <Button
+              onClick={async () => {
+                if (!orderId) return;
+                setActionError(null);
+                try {
+                  await client.confirmPickup(orderId, pickupConfirmCode.trim());
+                  setPickupConfirmCode("");
+                  const updated = await client.getOrder(orderId);
+                  setOrder(updated);
+                } catch (err) {
+                  setActionError(
+                    err instanceof Error ? err.message : t("vendor.orderDetails.updateFailed"),
+                  );
+                }
+              }}
+            >
+              {t("vendor.orderDetails.confirm")}
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {order.fulfillment_type === "DELIVERY" && order.delivers_self && order.status === "READY" && (
+        <Card className="border-amber-200 bg-amber-50">
+          <div className="text-sm font-semibold">{t("vendor.orderDetails.selfDelivery")}</div>
+          <div className="mt-3 flex gap-2">
+            <Input
+              value={deliveryConfirmCode}
+              onChange={(event) => setDeliveryConfirmCode(event.target.value)}
+              placeholder={t("client.deliveryCode")}
+            />
+            <Button
+              onClick={async () => {
+                if (!orderId) return;
+                setActionError(null);
+                try {
+                  await client.confirmDelivery(orderId, deliveryConfirmCode.trim());
+                  setDeliveryConfirmCode("");
+                  const updated = await client.getOrder(orderId);
+                  setOrder(updated);
+                } catch (err) {
+                  setActionError(
+                    err instanceof Error ? err.message : t("vendor.orderDetails.updateFailed"),
+                  );
+                }
+              }}
+            >
+              {t("vendor.orderDetails.confirm")}
+            </Button>
+          </div>
+        </Card>
       )}
 
       <div className="details-grid">
         <div>
-          <strong>Status</strong>
-          <div>{order.status}</div>
+          <strong>{t("fields.status")}</strong>
+          <div>{translateStatus(order.status)}</div>
         </div>
         <div>
-          <strong>Courier</strong>
-          <div>{order.courier_id ?? "-"}</div>
+          <strong>{t("admin.orderDetails.courier")}</strong>
+          <div>
+            {order.courier?.full_name
+              ? `${order.courier.full_name} (${order.courier_id ?? "-"})`
+              : order.courier_id ?? "-"}
+          </div>
         </div>
         <div>
-          <strong>Fulfillment</strong>
-          <div>{order.fulfillment_type}</div>
+          <strong>{t("admin.orderDetails.fulfillment")}</strong>
+          <div>{translateFulfillment(order.fulfillment_type)}</div>
         </div>
         <div>
-          <strong>Delivery comment</strong>
+          <strong>{t("client.deliveryComment")}</strong>
           <div>{order.delivery_comment ?? "-"}</div>
         </div>
         <div>
-          <strong>Vendor comment</strong>
+          <strong>{t("client.vendorComment")}</strong>
           <div>{order.vendor_comment ?? "-"}</div>
         </div>
         <div>
-          <strong>Utensils</strong>
+          <strong>{t("admin.orderDetails.utensils")}</strong>
           <div>{order.utensils_count}</div>
         </div>
         <div>
-          <strong>Receiver phone</strong>
+          <strong>{t("client.receiverPhone")}</strong>
           <div>{order.receiver_phone ?? "-"}</div>
         </div>
         <div>
-          <strong>Payment</strong>
-          <div>{order.payment_method ?? "-"}</div>
+          <strong>{t("client.payment")}</strong>
+          <div>{order.payment_method ? translatePayment(order.payment_method) : "-"}</div>
         </div>
         <div>
-          <strong>Change for</strong>
+          <strong>{t("admin.orderDetails.changeFor")}</strong>
           <div>{order.change_for_amount ?? "-"}</div>
         </div>
         <div>
-          <strong>Address</strong>
+          <strong>{t("client.address")}</strong>
           <div>{order.address_text ?? "-"}</div>
         </div>
         <div>
-          <strong>Entrance / Apt</strong>
+          <strong>{t("client.entranceApt")}</strong>
           <div>
             {order.address_entrance ?? "-"} / {order.address_apartment ?? "-"}
           </div>
         </div>
       </div>
 
-
-      <h2>Items</h2>
+      <h2>{t("client.items")}</h2>
       <table className="data-table">
         <thead>
           <tr>
-            <th>Menu Item</th>
-            <th>Qty</th>
-            <th>Price</th>
-            <th>Discount</th>
-            <th>Gift</th>
+            <th>{t("admin.orderDetails.items.menuItem")}</th>
+            <th>{t("client.qty")}</th>
+            <th>{t("client.price")}</th>
+            <th>{t("admin.orderDetails.items.discount")}</th>
+            <th>{t("admin.orderDetails.items.gift")}</th>
           </tr>
         </thead>
         <tbody>
@@ -1319,40 +1959,41 @@ function OrderDetailsPage({ vendorId }: { vendorId: string }) {
               <td>{item.quantity}</td>
               <td>{item.price}</td>
               <td>{item.discount_amount}</td>
-              <td>{item.is_gift ? "Yes" : "No"}</td>
+              <td>{item.is_gift ? t("common.yes") : t("common.no")}</td>
             </tr>
           ))}
         </tbody>
       </table>
 
-      <h2>Rating</h2>
+      <h2>{t("admin.orderDetails.ratingTitle")}</h2>
       {order.rating ? (
         <div className="details-grid">
           <div>
-            <strong>Vendor stars</strong>
+            <strong>{t("admin.orderDetails.rating.vendorStars")}</strong>
             <div>{order.rating.vendor_stars}</div>
           </div>
           <div>
-            <strong>Vendor comment</strong>
+            <strong>{t("admin.orderDetails.rating.vendorComment")}</strong>
             <div>{order.rating.vendor_comment ?? "-"}</div>
           </div>
           <div>
-            <strong>Courier stars</strong>
+            <strong>{t("admin.orderDetails.rating.courierStars")}</strong>
             <div>{order.rating.courier_stars ?? "-"}</div>
           </div>
           <div>
-            <strong>Courier comment</strong>
+            <strong>{t("admin.orderDetails.rating.courierComment")}</strong>
             <div>{order.rating.courier_comment ?? "-"}</div>
           </div>
         </div>
       ) : (
-        <p>No rating yet.</p>
+        <p>{t("admin.orderDetails.ratingEmpty")}</p>
       )}
     </section>
   );
 }
 
 function MenuPage({ vendorId }: { vendorId: string }) {
+  const { t } = useTranslation();
   const [items, setItems] = useState<MenuItem[]>([]);
   const [form, setForm] = useState({
     title: "",
@@ -1367,12 +2008,13 @@ function MenuPage({ vendorId }: { vendorId: string }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isUploading, setIsUploading] = useState(false);
 
   const loadItems = async () => {
     setIsLoading(true);
     setError(null);
     try {
-      if (!vendorId) {
+      if (isDevMode && !vendorId) {
         setItems([]);
         setIsLoading(false);
         return;
@@ -1380,7 +2022,7 @@ function MenuPage({ vendorId }: { vendorId: string }) {
       const data = await client.listMenu();
       setItems(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load menu");
+      setError(err instanceof Error ? err.message : t("vendor.menu.loadFailed"));
     } finally {
       setIsLoading(false);
     }
@@ -1391,17 +2033,17 @@ function MenuPage({ vendorId }: { vendorId: string }) {
   }, [vendorId]);
 
   const handleSave = async () => {
-    if (!vendorId) {
-      setError("Set vendor ID to manage menu.");
+    if (isDevMode && !vendorId) {
+      setError(t("errors.vendorIdRequired"));
       return;
     }
     if (!form.title.trim()) {
-      setError("Title is required.");
+      setError(t("vendor.menu.titleRequired"));
       return;
     }
     const price = Number(form.price);
     if (!Number.isFinite(price)) {
-      setError("Price is required.");
+      setError(t("vendor.menu.priceRequired"));
       return;
     }
     setIsLoading(true);
@@ -1445,34 +2087,34 @@ function MenuPage({ vendorId }: { vendorId: string }) {
         image_url: "",
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save menu item");
+      setError(err instanceof Error ? err.message : t("vendor.menu.saveFailed"));
     } finally {
       setIsLoading(false);
     }
   };
 
   const formTitle = useMemo(
-    () => (editingId ? "Edit menu item" : "New menu item"),
+    () => (editingId ? t("vendor.menu.editTitle") : t("vendor.menu.createTitle")),
     [editingId],
   );
 
   return (
     <section>
-      <div className="page-header">
-        <h1>Menu</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-xl font-semibold text-slate-900">{t("nav.menu")}</h2>
         <button className="secondary" onClick={() => void loadItems()}>
-          Refresh
+          {t("common.refresh")}
         </button>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
-      {!vendorId && <div className="error-banner">Set vendor ID to manage menu.</div>}
+      {isDevMode && !vendorId && <div className="error-banner">{t("errors.vendorIdRequired")}</div>}
 
       <div className="panel">
         <h2>{formTitle}</h2>
         <div className="details-grid">
           <label>
-            Title
+            {t("vendor.menu.title")}
             <input
               type="text"
               value={form.title}
@@ -1480,7 +2122,7 @@ function MenuPage({ vendorId }: { vendorId: string }) {
             />
           </label>
           <label>
-            Description
+            {t("vendor.menu.description")}
             <input
               type="text"
               value={form.description}
@@ -1488,7 +2130,7 @@ function MenuPage({ vendorId }: { vendorId: string }) {
             />
           </label>
           <label>
-            Weight value
+            {t("vendor.menu.weightValue")}
             <input
               type="number"
               value={form.weight_value}
@@ -1496,7 +2138,7 @@ function MenuPage({ vendorId }: { vendorId: string }) {
             />
           </label>
           <label>
-            Weight unit
+            {t("vendor.menu.weightUnit")}
             <input
               type="text"
               value={form.weight_unit}
@@ -1504,7 +2146,7 @@ function MenuPage({ vendorId }: { vendorId: string }) {
             />
           </label>
           <label>
-            Price
+            {t("vendor.menu.price")}
             <input
               type="number"
               value={form.price}
@@ -1519,10 +2161,10 @@ function MenuPage({ vendorId }: { vendorId: string }) {
                 setForm({ ...form, is_available: event.target.checked })
               }
             />
-            Available
+            {t("vendor.menu.available")}
           </label>
           <label>
-            Category
+            {t("vendor.menu.category")}
             <input
               type="text"
               value={form.category}
@@ -1530,17 +2172,45 @@ function MenuPage({ vendorId }: { vendorId: string }) {
             />
           </label>
           <label>
-            Image URL
+            {t("vendor.menu.image")}
             <input
-              type="text"
-              value={form.image_url}
-              onChange={(event) => setForm({ ...form, image_url: event.target.value })}
+              type="file"
+              accept="image/*"
+              onChange={async (event) => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                setIsUploading(true);
+                try {
+                  const result = await client.uploadFile(file);
+                  setForm((prev) => ({ ...prev, image_url: result.public_url }));
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : t("errors.uploadFailed"));
+                } finally {
+                  setIsUploading(false);
+                  event.target.value = "";
+                }
+              }}
+              disabled={isUploading}
             />
+            {form.image_url ? (
+              <div className="image-preview">
+                <img src={resolveAssetUrl(form.image_url)} alt={t("vendor.menu.image")} />
+                <button
+                  className="link danger"
+                  onClick={() => setForm((prev) => ({ ...prev, image_url: "" }))}
+                  type="button"
+                >
+                  {t("common.remove")}
+                </button>
+              </div>
+            ) : (
+              <span className="muted">{t("empty.noImage")}</span>
+            )}
           </label>
         </div>
         <div className="inline">
           <button className="primary" onClick={handleSave}>
-            {editingId ? "Update item" : "Create item"}
+            {editingId ? t("vendor.menu.updateItem") : t("vendor.menu.createItem")}
           </button>
           {editingId && (
             <button
@@ -1559,33 +2229,41 @@ function MenuPage({ vendorId }: { vendorId: string }) {
                   });
               }}
             >
-              Cancel edit
+              {t("vendor.menu.cancelEdit")}
             </button>
           )}
         </div>
       </div>
 
       {isLoading ? (
-        <p>Loading menu...</p>
+        <p>{t("vendor.menu.loading")}</p>
       ) : (
         <table className="data-table">
           <thead>
             <tr>
-              <th>Title</th>
-              <th>Weight</th>
-              <th>Price</th>
-              <th>Available</th>
-              <th>Category</th>
+              <th>{t("vendor.menu.image")}</th>
+              <th>{t("vendor.menu.title")}</th>
+              <th>{t("vendor.menu.weight")}</th>
+              <th>{t("vendor.menu.price")}</th>
+              <th>{t("vendor.menu.available")}</th>
+              <th>{t("vendor.menu.category")}</th>
               <th />
             </tr>
           </thead>
           <tbody>
             {items.map((item) => (
               <tr key={item.id}>
+                <td>
+                  {item.image_url ? (
+                    <img className="thumb" src={resolveAssetUrl(item.image_url)} alt={item.title} />
+                  ) : (
+                    <span className="muted">—</span>
+                  )}
+                </td>
                 <td>{item.title}</td>
                 <td>{item.weight_value ? `${item.weight_value} ${item.weight_unit ?? ""}` : "-"}</td>
                 <td>{item.price}</td>
-                <td>{item.is_available ? "Yes" : "No"}</td>
+                <td>{item.is_available ? t("common.yes") : t("common.no")}</td>
                 <td>{item.category ?? "-"}</td>
                 <td>
                   <button
@@ -1604,7 +2282,7 @@ function MenuPage({ vendorId }: { vendorId: string }) {
                       });
                     }}
                   >
-                    Edit
+                    {t("common.edit")}
                   </button>
                   <button
                     className="link danger"
@@ -1614,20 +2292,20 @@ function MenuPage({ vendorId }: { vendorId: string }) {
                         await client.deleteMenuItem(item.id);
                         setItems(items.filter((row) => row.id !== item.id));
                       } catch (err) {
-                        setError(err instanceof Error ? err.message : "Failed to delete");
+                        setError(err instanceof Error ? err.message : t("vendor.menu.deleteFailed"));
                       } finally {
                         setIsLoading(false);
                       }
                     }}
                   >
-                    Delete
+                    {t("common.delete")}
                   </button>
                 </td>
               </tr>
             ))}
             {items.length === 0 && (
               <tr>
-                <td colSpan={5}>No menu items yet.</td>
+                <td colSpan={5}>{t("vendor.menu.empty")}</td>
               </tr>
             )}
           </tbody>

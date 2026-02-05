@@ -57,6 +57,67 @@ Critical contracts (quote, order, promotions):
 
 Breaking contract = failing build.
 
+## Auth & Files
+
+### JWT claims (all roles)
+```
+{
+  "sub": "user_id",
+  "role": "ADMIN | VENDOR | COURIER | CLIENT",
+  "vendorId": "vendor_id (for VENDOR)",
+  "courierId": "courier_id (for COURIER)",
+  "clientId": "client_id (for CLIENT)"
+}
+```
+Notes:
+- Use `Authorization: Bearer <token>` in production for all role-scoped endpoints.
+- DEV_MODE supports legacy headers (`x-dev-user`, `x-vendor-id`, `x-client-id`, `x-courier-id`).
+
+### `POST /vendor/auth/login`
+Request:
+```json
+{ "login": "vendor_login", "password": "secret" }
+```
+Response:
+```json
+{ "token": "jwt", "vendor_id": "uuid", "is_active": true }
+```
+
+### `POST /client/auth/register`
+Request:
+```json
+{ "full_name": "Name", "birth_date": "2000-01-01", "phone": "+998901112233", "password": "secret" }
+```
+Response:
+```json
+{ "token": "jwt", "client_id": "uuid", "full_name": "Name", "phone": "+998901112233" }
+```
+
+### `POST /client/auth/login`
+Request:
+```json
+{ "phone": "+998901112233", "password": "secret" }
+```
+Response:
+```json
+{ "token": "jwt", "client_id": "uuid" }
+```
+
+### `POST /client/auth/telegram`
+Headers:
+- `x-telegram-init-data`: Telegram initData
+Response:
+```json
+{ "token": "jwt", "client_id": "tg:123" }
+```
+
+### `POST /files/upload`
+Multipart form-data with `file`.
+Response:
+```json
+{ "file_id": "uuid", "public_url": "/uploads/<filename>" }
+```
+
 ## Client Orders
 
 ### `GET /client/categories`
@@ -74,10 +135,15 @@ Response:
       "vendor_id": "uuid",
       "category": "RESTAURANTS",
       "supports_pickup": true,
+      "delivers_self": false,
       "address_text": "Street 1",
       "geo": { "lat": 55.75, "lng": 37.62 },
       "name": "Vendor 123",
       "description": "Optional vendor description",
+      "is_active": true,
+      "is_blocked": false,
+      "is_open_now": true,
+      "next_open_at": "2026-02-03T06:00:00.000Z",
       "rating": null,
       "rating_avg": 0,
       "rating_count": 0,
@@ -94,10 +160,15 @@ Response:
   "vendor_id": "uuid",
   "category": "RESTAURANTS",
   "supports_pickup": true,
+  "delivers_self": false,
   "address_text": "Street 1",
   "geo": { "lat": 55.75, "lng": 37.62 },
   "name": "Vendor 123",
   "description": "Optional vendor description",
+  "is_active": true,
+  "is_blocked": false,
+  "is_open_now": true,
+  "next_open_at": "2026-02-03T06:00:00.000Z",
   "rating": null,
   "rating_avg": 0,
   "rating_count": 0,
@@ -147,6 +218,10 @@ Notes:
 - `napkins_count` is accepted temporarily for backward compatibility but merged into `utensils_count`.
 Errors:
 - `PROMO_ALREADY_USED` when the client has already redeemed the promo code.
+Order responses may include `courier`:
+```json
+{ "courier": { "id": "uuid", "full_name": "Courier Name" } }
+```
 
 ### `POST /client/orders`
 Creates a new order from the client cart snapshot.
@@ -192,12 +267,14 @@ Creates a new order from the client cart snapshot.
   "combo_count": 0,
   "buyxgety_count": 0,
   "gift_count": 0,
-  "delivery_code": "1234"
+  "delivery_code": "1234",
+  "pickup_code": null
 }
 ```
 
 Notes:
-- `delivery_code` is returned only for DELIVERY orders. Pickup code is not returned to the client.
+- `delivery_code` is returned only for DELIVERY orders.
+- `pickup_code` is returned only for PICKUP orders.
 - Until auth is wired, client identity is taken from headers (see `docs/status.md` assumptions).
  - `promo_code` and `promo_code_discount` are returned only if a valid promo code was applied.
 
@@ -212,6 +289,7 @@ Response:
   "vendor_id": "uuid",
   "vendor_name": "Vendor 123",
   "vendor_geo": { "lat": 55.75, "lng": 37.62 },
+  "delivers_self": false,
   "courier_id": "uuid",
   "courier_rating_avg": 4.8,
   "courier_rating_count": 10,
@@ -304,7 +382,7 @@ Response:
 ```
 
 ### `GET /client/orders/{orderId}/tracking`
-Returns last known courier location only after `COURIER_ACCEPTED`.
+Returns last known courier location only after courier assignment and `READY` (or later).
 
 Response:
 ```json
@@ -345,7 +423,7 @@ Response:
 ```json
 {
   "order_id": "uuid",
-  "status": "COURIER_ACCEPTED",
+  "status": "READY",
   "vendor_id": "uuid",
   "vendor_name": "Vendor 123",
   "vendor_address": "Street 1",
@@ -371,14 +449,21 @@ Response:
 ### `POST /courier/orders/{orderId}/accept`
 Response:
 ```json
-{ "order_id": "uuid", "status": "COURIER_ACCEPTED" }
+{ "order_id": "uuid", "status": "READY" }
+```
+
+### `POST /courier/orders/{orderId}/handoff`
+Request:
+```json
+{ "handoff_code": "1234" }
+```
+Response:
+```json
+{ "order_id": "uuid", "status": "HANDOFF_CONFIRMED" }
 ```
 
 ### `POST /courier/orders/{orderId}/pickup`
-Request:
-```json
-{ "pickup_code": "1234" }
-```
+Request: empty body if already HANDOFF_CONFIRMED, or provide `handoff_code` (legacy `pickup_code`).
 Response:
 ```json
 { "order_id": "uuid", "status": "PICKED_UP" }
@@ -401,7 +486,7 @@ Request:
 ```
 Response:
 ```json
-{ "order_id": "uuid", "status": "COURIER_ACCEPTED" }
+{ "order_id": "uuid", "status": "READY" }
 ```
 
 ### `GET /courier/orders/history`
@@ -486,7 +571,7 @@ Response:
 ## Vendor Orders
 
 ### `GET /vendor/orders/active`
-Returns current active orders for the vendor (NEW/ACCEPTED/COOKING/READY).
+Returns current active orders for the vendor (NEW/ACCEPTED/COOKING/READY/HANDOFF_CONFIRMED/PICKED_UP).
 
 ### `GET /vendor/orders/history`
 Returns completed/cancelled orders for the vendor.
@@ -508,7 +593,7 @@ Returns vendor order details (same shape as admin order detail subset).
 ### `POST /vendor/orders/{orderId}/accept`
 Response:
 ```json
-{ "order_id": "uuid", "status": "ACCEPTED" }
+{ "order_id": "uuid", "status": "COOKING" }
 ```
 
 ### `POST /vendor/orders/{orderId}/status`
@@ -518,7 +603,29 @@ Request:
 ```
 Response:
 ```json
-{ "order_id": "uuid", "status": "COOKING" }
+{ "order_id": "uuid", "status": "COOKING", "handoff_code": null }
+```
+
+### `POST /vendor/orders/{orderId}/pickup`
+Confirm pickup order by code.
+Request:
+```json
+{ "pickup_code": "1234" }
+```
+Response:
+```json
+{ "order_id": "uuid", "status": "COMPLETED" }
+```
+
+### `POST /vendor/orders/{orderId}/deliver`
+Confirm self-delivery by code (vendor deliversSelf).
+Request:
+```json
+{ "delivery_code": "5678" }
+```
+Response:
+```json
+{ "order_id": "uuid", "status": "DELIVERED" }
 ```
 
 ### `GET /vendor/menu`
@@ -573,7 +680,12 @@ Response:
   "phone": "+998...",
   "address_text": "Street 1",
   "opening_hours": "9-21",
+  "timezone": "Asia/Tashkent",
+  "schedule": [
+    { "weekday": "MON", "open_time": "09:00", "close_time": "21:00", "closed": false, "is24h": false }
+  ],
   "supports_pickup": true,
+  "delivers_self": false,
   "payment_methods": { "cash": true, "card": true },
   "geo": { "lat": 55.75, "lng": 37.62 }
 }
@@ -590,7 +702,12 @@ Request:
   "phone3": "+998...",
   "email": "owner@vendor.uz",
   "inn": "123456789",
-  "address_text": "Street 1"
+  "address_text": "Street 1",
+  "timezone": "Asia/Tashkent",
+  "schedule": [
+    { "weekday": "MON", "open_time": "09:00", "close_time": "21:00", "closed": false, "is24h": false }
+  ],
+  "delivers_self": false
 }
 ```
 

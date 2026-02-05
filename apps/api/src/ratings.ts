@@ -1,7 +1,7 @@
 import { OrderStatus } from "./orderState";
 
 export function isRateableStatus(status: string) {
-  return status === OrderStatus.DELIVERED || status === OrderStatus.PICKED_UP_BY_CUSTOMER;
+  return status === OrderStatus.DELIVERED || status === OrderStatus.COMPLETED;
 }
 
 export function assertRateableStatus(status: string) {

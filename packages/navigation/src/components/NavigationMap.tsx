@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MapContainer, Marker, Polyline, TileLayer, useMap } from "react-leaflet";
+import { t } from "@nodex/i18n";
 import type { LatLng } from "../utils/geo";
 import {
   DEFAULT_CENTER_QONIRAT,
@@ -112,10 +113,10 @@ export function NavigationMap({
     <div className="nav-map">
       <div className="nav-summary">
         <div>
-          <strong>Distance:</strong> {formatKm(distanceKm)}
+          <strong>{t("common.distance")}:</strong> {formatKm(distanceKm)}
         </div>
         <div>
-          <strong>ETA:</strong> {formatEtaMinutes(etaMinutes)}
+          <strong>{t("common.eta")}:</strong> {formatEtaMinutes(etaMinutes)}
         </div>
         <div className="nav-legend">
           <span className="nav-dot pickup" /> Pickup

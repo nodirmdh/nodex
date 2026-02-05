@@ -11,13 +11,28 @@ export type Vendor = {
   phone3?: string | null;
   email?: string | null;
   phone: string | null;
+  login?: string | null;
   inn: string | null;
   category: string;
   supports_pickup: boolean;
+  delivers_self?: boolean;
   address_text: string | null;
   is_active: boolean;
+  is_blocked?: boolean | null;
+  blocked_reason?: string | null;
+  blocked_at?: string | null;
   opening_hours: string | null;
   payout_details: unknown | null;
+  main_image_url?: string | null;
+  gallery_images?: string[];
+  timezone?: string | null;
+  schedule?: Array<{
+    weekday: string;
+    open_time: string | null;
+    close_time: string | null;
+    closed: boolean;
+    is24h: boolean;
+  }>;
   geo: { lat: number; lng: number };
   rating_avg?: number;
   rating_count?: number;
@@ -54,6 +69,7 @@ export type OrderSummary = {
   vendor_name?: string | null;
   client_id?: string | null;
   courier_id?: string | null;
+  courier?: { id: string; full_name: string | null } | null;
   fulfillment_type: string;
   items_subtotal: number;
   total: number;
@@ -68,8 +84,10 @@ export type OrderDetails = {
   status: string;
   vendor_id: string;
   vendor_name?: string | null;
+  delivers_self?: boolean;
   client_id: string | null;
   courier_id: string | null;
+  courier?: { id: string; full_name: string | null } | null;
   fulfillment_type: string;
   delivery_location: { lat: number; lng: number } | null;
   delivery_comment: string | null;
@@ -178,6 +196,9 @@ export type ClientDetails = {
     phone: string | null;
     telegram_username: string | null;
     about: string | null;
+    birth_date?: string | null;
+    avatar_url?: string | null;
+    avatar_file_id?: string | null;
   } | null;
   addresses: Array<{
     id: string;
@@ -228,21 +249,28 @@ export type CourierSummary = {
   gross_earnings?: number;
   full_name?: string | null;
   phone?: string | null;
+  login?: string | null;
   telegram_username?: string | null;
   delivery_method?: string | null;
   is_available?: boolean | null;
   max_active_orders?: number | null;
+  is_blocked?: boolean | null;
 };
 
 export type CourierDetails = {
   courier_id: string;
+  login?: string | null;
   full_name: string | null;
   phone: string | null;
   telegram_username: string | null;
-  photo_url?: string | null;
+  avatar_url?: string | null;
   delivery_method: string | null;
   is_available: boolean | null;
   max_active_orders: number | null;
+  is_blocked?: boolean | null;
+  blocked_reason?: string | null;
+  blocked_at?: string | null;
+  created_at?: string | null;
   delivered_count: number;
   gross_earnings: number;
   average_per_order: number;
@@ -317,6 +345,8 @@ export class ApiClient {
   async createVendor(payload: {
     name: string;
     description?: string;
+    login?: string | null;
+    password?: string | null;
     owner_full_name?: string;
     phone1?: string;
     phone2?: string;
@@ -326,10 +356,23 @@ export class ApiClient {
     inn?: string;
     category: string;
     supports_pickup: boolean;
+    delivers_self?: boolean;
     address_text?: string;
     is_active?: boolean;
+    is_blocked?: boolean;
+    blocked_reason?: string | null;
     opening_hours?: string;
     payout_details?: unknown;
+    main_image_url?: string | null;
+    gallery_images?: string[] | null;
+    timezone?: string | null;
+    schedule?: Array<{
+      weekday: string;
+      open_time: string | null;
+      close_time: string | null;
+      closed: boolean;
+      is24h: boolean;
+    }>;
     geo: { lat: number; lng: number };
   }): Promise<Vendor> {
     return this.request<Vendor>("/admin/vendors", "POST", payload);
@@ -420,6 +463,8 @@ export class ApiClient {
     payload: Partial<{
       name: string;
       owner_full_name: string | null;
+      login: string | null;
+      password: string | null;
       phone1: string | null;
       phone2: string | null;
       phone3: string | null;
@@ -428,10 +473,23 @@ export class ApiClient {
       inn: string | null;
       category: string;
       supports_pickup: boolean;
+      delivers_self: boolean;
       address_text: string | null;
       is_active: boolean;
+      is_blocked: boolean;
+      blocked_reason: string | null;
       opening_hours: string | null;
       payout_details: unknown | null;
+      main_image_url: string | null;
+      gallery_images: string[] | null;
+      timezone: string | null;
+      schedule: Array<{
+        weekday: string;
+        open_time: string | null;
+        close_time: string | null;
+        closed: boolean;
+        is24h: boolean;
+      }>;
       geo: { lat: number; lng: number };
     }>,
   ): Promise<Vendor> {
@@ -550,14 +608,18 @@ export class ApiClient {
   }
 
   async createCourier(payload: {
-    courier_id: string;
+    courier_id?: string;
+    login?: string | null;
+    password?: string | null;
     full_name?: string | null;
     phone?: string | null;
     telegram_username?: string | null;
-    photo_url?: string | null;
+    avatar_url?: string | null;
     delivery_method?: string | null;
     is_available?: boolean;
     max_active_orders?: number;
+    is_blocked?: boolean;
+    blocked_reason?: string | null;
   }): Promise<CourierDetails> {
     return this.request<CourierDetails>("/admin/couriers", "POST", payload);
   }
@@ -569,13 +631,17 @@ export class ApiClient {
   async updateCourier(
     courierId: string,
     payload: Partial<{
+      login: string | null;
+      password: string | null;
       full_name: string | null;
       phone: string | null;
       telegram_username: string | null;
-      photo_url: string | null;
+      avatar_url: string | null;
       delivery_method: string | null;
       is_available: boolean;
       max_active_orders: number;
+      is_blocked: boolean;
+      blocked_reason: string | null;
     }>,
   ): Promise<CourierDetails> {
     return this.request<CourierDetails>(`/admin/couriers/${courierId}`, "PATCH", payload);
@@ -648,6 +714,32 @@ export class ApiClient {
   async getFinance(range?: string): Promise<FinanceSummary> {
     const query = range ? `?range=${encodeURIComponent(range)}` : "";
     return this.request<FinanceSummary>(`/admin/finance${query}`);
+  }
+
+  async uploadFile(file: File): Promise<{ file_id: string; public_url: string }> {
+    const token = localStorage.getItem("nodex_admin_token");
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await fetch(`${this.baseUrl}/files/upload`, {
+      method: "POST",
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: formData,
+    });
+
+    if (response.status === 401) {
+      localStorage.removeItem("nodex_admin_token");
+      this.onUnauthorized?.();
+    }
+
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(message || `Request failed: ${response.status}`);
+    }
+
+    return response.json() as Promise<{ file_id: string; public_url: string }>;
   }
 
   private async request<T>(path: string, method = "GET", body?: unknown): Promise<T> {

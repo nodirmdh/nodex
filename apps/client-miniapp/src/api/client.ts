@@ -19,18 +19,38 @@ const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
 const DEV_MODE =
   import.meta.env.VITE_DEV_MODE === "true" || import.meta.env.VITE_DEV_MODE === "1";
 const DEV_CLIENT_ID = import.meta.env.VITE_DEV_CLIENT_ID ?? "dev-client-1";
+const TOKEN_KEY = "nodex_client_token";
+
+export function getClientToken() {
+  return window.localStorage.getItem(TOKEN_KEY);
+}
+
+export function setClientToken(token: string | null) {
+  if (token) {
+    window.localStorage.setItem(TOKEN_KEY, token);
+  } else {
+    window.localStorage.removeItem(TOKEN_KEY);
+  }
+}
 
 function buildHeaders() {
   const initData = getTelegramInitData();
   const tgUserId = parseTelegramUserId(initData);
   const clientId = tgUserId ?? (DEV_MODE ? DEV_CLIENT_ID : "");
+  const token = getClientToken();
 
-  return {
+  const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(DEV_MODE ? { "x-dev-user": "client" } : { "x-role": "CLIENT" }),
-    "x-client-id": clientId,
     ...(initData ? { "x-telegram-init-data": initData } : {}),
   };
+  if (clientId) {
+    headers["x-client-id"] = clientId;
+  }
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  return headers;
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -54,6 +74,50 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 export async function listCategories(): Promise<string[]> {
   const data = await request<{ categories: string[] }>("/client/categories");
   return data.categories;
+}
+
+export async function registerClient(payload: {
+  full_name: string;
+  birth_date: string;
+  phone: string;
+  password: string;
+}): Promise<{ token: string; client_id: string; full_name: string | null; phone: string | null }> {
+  const data = await request<{
+    token: string;
+    client_id: string;
+    full_name: string | null;
+    phone: string | null;
+  }>("/client/auth/register", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  setClientToken(data.token);
+  return data;
+}
+
+export async function loginClient(payload: {
+  phone: string;
+  password: string;
+}): Promise<{ token: string; client_id: string; full_name: string | null; phone: string | null }> {
+  const data = await request<{
+    token: string;
+    client_id: string;
+    full_name: string | null;
+    phone: string | null;
+  }>("/client/auth/login", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  setClientToken(data.token);
+  return data;
+}
+
+export async function telegramLogin(): Promise<{ token: string; client_id: string }> {
+  const data = await request<{ token: string; client_id: string }>("/client/auth/telegram", {
+    method: "POST",
+  });
+  setClientToken(data.token);
+  return data;
 }
 
 export async function listVendors(): Promise<VendorSummary[]> {
@@ -175,6 +239,9 @@ export async function updateProfile(payload: {
   phone?: string | null;
   telegram_username?: string | null;
   about?: string | null;
+  birth_date?: string | null;
+  avatar_url?: string | null;
+  avatar_file_id?: string | null;
 }): Promise<ClientProfile> {
   return request<ClientProfile>("/client/profile", {
     method: "PATCH",

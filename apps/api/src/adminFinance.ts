@@ -28,7 +28,9 @@ export type FinanceByVendorRow = FinanceSummary & {
 };
 
 export function computeFinanceSummary(orders: FinanceOrder[]): FinanceSummary {
-  const delivered = orders.filter((order) => order.status === OrderStatus.DELIVERED);
+  const delivered = orders.filter(
+    (order) => order.status === OrderStatus.DELIVERED || order.status === OrderStatus.COMPLETED,
+  );
   const gmv = delivered.reduce((sum, order) => sum + order.itemsSubtotal, 0);
   const gross = delivered.reduce((sum, order) => sum + order.total, 0);
   const serviceFeeTotal = delivered.reduce((sum, order) => sum + order.serviceFee, 0);

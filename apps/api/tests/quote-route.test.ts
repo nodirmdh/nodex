@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildServer } from "../src/server";
 import { FulfillmentType, PromotionType, VendorCategory } from "../src/pricing";
-import { QuoteContextRepository, buildQuoteContextFromRepository } from "../src/quoteContext";
+import { QuoteContextRepository } from "../src/quoteContext";
 
 class InMemoryQuoteRepository implements QuoteContextRepository {
   async getVendor(_vendorId: string) {
@@ -61,8 +61,7 @@ describe("POST /client/cart/quote", () => {
   it("returns a quote response matching the contract", async () => {
     const repository = new InMemoryQuoteRepository();
     const app = buildServer({
-      quoteContextBuilder: (vendorId, menuItemIds, promoCode) =>
-        buildQuoteContextFromRepository(repository, vendorId, menuItemIds, promoCode),
+      repository,
     });
 
     try {

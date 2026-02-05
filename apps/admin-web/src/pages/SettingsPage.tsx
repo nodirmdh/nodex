@@ -1,29 +1,32 @@
+import { useTranslation } from "react-i18next";
+
+import { PageShell } from "@nodex/ui";
+
 export function SettingsPage() {
+  const { t } = useTranslation();
   const devMode = import.meta.env.VITE_DEV_MODE === "true" || import.meta.env.VITE_DEV_MODE === "1";
 
   return (
-    <section>
-      <h1>Settings</h1>
-
-      <h2>Finance constants</h2>
+    <PageShell title={t("admin.settings.title")} subtitle={t("admin.settings.subtitle")}>
+      <h2>{t("admin.settings.financeConstants")}</h2>
       <div className="details-grid">
         <div>
-          <strong>Service fee</strong>
+          <strong>{t("admin.settings.serviceFee")}</strong>
           <div>3000</div>
         </div>
         <div>
-          <strong>Delivery fee</strong>
-          <div>3000 + ceil(distance_km) * 1000</div>
+          <strong>{t("admin.settings.deliveryFee")}</strong>
+          <div>{t("admin.settings.deliveryFormula")}</div>
         </div>
       </div>
 
-      <h2>Environment</h2>
+      <h2>{t("admin.settings.environment")}</h2>
       <div className="details-grid">
         <div>
           <strong>DEV_MODE</strong>
-          <div>{devMode ? "ON" : "OFF"}</div>
+          <div>{devMode ? t("admin.settings.devOn") : t("admin.settings.devOff")}</div>
         </div>
       </div>
-    </section>
+    </PageShell>
   );
 }

@@ -1,6 +1,20 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 
+import {
+  Button,
+  Input,
+  PageShell,
+  StatusBadge,
+  Table,
+  TableCell,
+  TableHead,
+  TableHeaderCell,
+  TableRow,
+  toast,
+} from "@nodex/ui";
+import { formatDateTime, formatNumber, translateFulfillment } from "@nodex/i18n";
 import { ApiClient, OrderSummary } from "../api/client";
 
 const client = new ApiClient({
@@ -10,6 +24,7 @@ const client = new ApiClient({
 });
 
 export function OrdersPage() {
+  const { t } = useTranslation();
   const [orders, setOrders] = useState<OrderSummary[]>([]);
   const [filters, setFilters] = useState({
     order_id: "",
@@ -42,7 +57,9 @@ export function OrdersPage() {
       });
       setOrders(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load orders");
+      const message = err instanceof Error ? err.message : t("errors.loadOrders");
+      setError(message);
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -53,153 +70,104 @@ export function OrdersPage() {
   }, []);
 
   return (
-    <section>
-      <div className="page-header">
-        <h1>Orders</h1>
-        <button className="secondary" onClick={() => void loadOrders()}>
-          Refresh
-        </button>
+    <PageShell
+      title={t("admin.orders.title")}
+      subtitle={t("admin.orders.subtitle")}
+      actions={
+        <Button variant="secondary" onClick={() => void loadOrders()}>
+          {t("common.refresh")}
+        </Button>
+      }
+    >
+      <div className="grid gap-3 md:grid-cols-4">
+        <Input
+          placeholder={t("admin.orders.filters.orderId")}
+          value={filters.order_id}
+          onChange={(event) => setFilters({ ...filters, order_id: event.target.value })}
+        />
+        <Input
+          placeholder={t("admin.orders.filters.status")}
+          value={filters.status}
+          onChange={(event) => setFilters({ ...filters, status: event.target.value })}
+        />
+        <Input
+          placeholder={t("admin.orders.filters.vendorId")}
+          value={filters.vendor_id}
+          onChange={(event) => setFilters({ ...filters, vendor_id: event.target.value })}
+        />
+        <Input
+          placeholder={t("admin.orders.filters.vendorName")}
+          value={filters.vendor_name}
+          onChange={(event) => setFilters({ ...filters, vendor_name: event.target.value })}
+        />
+        <Input
+          placeholder={t("admin.orders.filters.clientId")}
+          value={filters.client_id}
+          onChange={(event) => setFilters({ ...filters, client_id: event.target.value })}
+        />
+        <Input
+          placeholder={t("admin.orders.filters.receiverPhone")}
+          value={filters.receiver_phone}
+          onChange={(event) => setFilters({ ...filters, receiver_phone: event.target.value })}
+        />
+        <Input
+          placeholder={t("admin.orders.filters.fulfillment")}
+          value={filters.fulfillment_type}
+          onChange={(event) => setFilters({ ...filters, fulfillment_type: event.target.value })}
+        />
+        <Input
+          placeholder={t("admin.orders.filters.from")}
+          value={filters.from}
+          onChange={(event) => setFilters({ ...filters, from: event.target.value })}
+        />
+        <Input
+          placeholder={t("admin.orders.filters.to")}
+          value={filters.to}
+          onChange={(event) => setFilters({ ...filters, to: event.target.value })}
+        />
+        <Button onClick={() => void loadOrders()}>{t("admin.orders.applyFilters")}</Button>
       </div>
 
-      <div className="filters">
-        <label>
-          Order ID
-          <input
-            type="text"
-            value={filters.order_id}
-            onChange={(event) => setFilters({ ...filters, order_id: event.target.value })}
-            placeholder="order uuid"
-          />
-        </label>
-        <label>
-          Status
-          <input
-            type="text"
-            value={filters.status}
-            onChange={(event) => setFilters({ ...filters, status: event.target.value })}
-            placeholder="READY, DELIVERED…"
-          />
-        </label>
-        <label>
-          Vendor ID
-          <input
-            type="text"
-            value={filters.vendor_id}
-            onChange={(event) => setFilters({ ...filters, vendor_id: event.target.value })}
-            placeholder="vendor uuid"
-          />
-        </label>
-        <label>
-          Vendor name
-          <input
-            type="text"
-            value={filters.vendor_name}
-            onChange={(event) => setFilters({ ...filters, vendor_name: event.target.value })}
-            placeholder="Vendor name"
-          />
-        </label>
-        <label>
-          Client ID
-          <input
-            type="text"
-            value={filters.client_id}
-            onChange={(event) => setFilters({ ...filters, client_id: event.target.value })}
-            placeholder="client id"
-          />
-        </label>
-        <label>
-          Receiver phone
-          <input
-            type="text"
-            value={filters.receiver_phone}
-            onChange={(event) =>
-              setFilters({ ...filters, receiver_phone: event.target.value })
-            }
-            placeholder="+998..."
-          />
-        </label>
-        <label>
-          Fulfillment
-          <input
-            type="text"
-            value={filters.fulfillment_type}
-            onChange={(event) =>
-              setFilters({ ...filters, fulfillment_type: event.target.value })
-            }
-            placeholder="DELIVERY / PICKUP"
-          />
-        </label>
-        <label>
-          From (ISO)
-          <input
-            type="text"
-            value={filters.from}
-            onChange={(event) => setFilters({ ...filters, from: event.target.value })}
-            placeholder="2026-02-01"
-          />
-        </label>
-        <label>
-          To (ISO)
-          <input
-            type="text"
-            value={filters.to}
-            onChange={(event) => setFilters({ ...filters, to: event.target.value })}
-            placeholder="2026-02-05"
-          />
-        </label>
-        <button className="primary" onClick={() => void loadOrders()}>
-          Apply filters
-        </button>
-      </div>
-
-      {error && <div className="error-banner">{error}</div>}
       {isLoading ? (
-        <p>Loading orders…</p>
+        <p>{t("admin.orders.loading")}</p>
       ) : (
-        <table className="data-table">
-          <thead>
-            <tr>
-              <th>Order</th>
-              <th>Status</th>
-              <th>Vendor</th>
-              <th>Fulfillment</th>
-              <th>Total</th>
-              <th>Created</th>
-              <th />
-            </tr>
-          </thead>
+        <Table>
+          <TableHead>
+            <TableRow>
+              <TableHeaderCell>{t("admin.orders.table.order")}</TableHeaderCell>
+              <TableHeaderCell>{t("admin.orders.table.status")}</TableHeaderCell>
+              <TableHeaderCell>{t("admin.orders.table.vendor")}</TableHeaderCell>
+              <TableHeaderCell>{t("admin.orders.table.fulfillment")}</TableHeaderCell>
+              <TableHeaderCell>{t("admin.orders.table.total")}</TableHeaderCell>
+              <TableHeaderCell>{t("admin.orders.table.created")}</TableHeaderCell>
+              <TableHeaderCell />
+            </TableRow>
+          </TableHead>
           <tbody>
             {orders.map((order) => (
-              <tr key={order.order_id}>
-                <td>{order.order_id}</td>
-                <td>{order.status}</td>
-                <td>{order.vendor_name ?? order.vendor_id}</td>
-                <td>{order.fulfillment_type}</td>
-                <td>{order.total}</td>
-                <td>{new Date(order.created_at).toLocaleString()}</td>
-                <td>
-                  <Link to={`/orders/${order.order_id}`}>View</Link>
-                  {order.vendor_id && (
-                    <span className="inline">
-                      <Link to={`/vendors/${order.vendor_id}`}>Vendor</Link>
-                    </span>
-                  )}
-                  {order.client_id && (
-                    <span className="inline">
-                      <Link to={`/clients/${order.client_id}`}>Client</Link>
-                    </span>
-                  )}
-                  {order.courier_id && (
-                    <span className="inline">
-                      <Link to={`/couriers/${order.courier_id}`}>Courier</Link>
-                    </span>
-                  )}
-                </td>
-              </tr>
+              <TableRow key={order.order_id}>
+                <TableCell>{order.order_id}</TableCell>
+                <TableCell>
+                  <StatusBadge status={order.status} />
+                </TableCell>
+                <TableCell>{order.vendor_name ?? order.vendor_id}</TableCell>
+                <TableCell>{translateFulfillment(order.fulfillment_type)}</TableCell>
+                <TableCell>{formatNumber(order.total)}</TableCell>
+                <TableCell>{formatDateTime(order.created_at)}</TableCell>
+                <TableCell>
+                  <div className="flex flex-wrap gap-2 text-xs text-sky-600">
+                    <Link to={`/orders/${order.order_id}`}>{t("common.view")}</Link>
+                    {order.vendor_id && <Link to={`/vendors/${order.vendor_id}`}>{t("admin.orders.links.vendor")}</Link>}
+                    {order.client_id && <Link to={`/clients/${order.client_id}`}>{t("admin.orders.links.client")}</Link>}
+                    {order.courier_id && <Link to={`/couriers/${order.courier_id}`}>{t("admin.orders.links.courier")}</Link>}
+                  </div>
+                </TableCell>
+              </TableRow>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
-    </section>
+      {error && <p className="error-banner">{error}</p>}
+    </PageShell>
   );
 }

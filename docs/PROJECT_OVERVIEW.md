@@ -41,7 +41,7 @@ There is no separate backend per app. No duplicate databases. No sync jobs.
      - active assigned order(s),
      - order history,
      - profile/rating/balance.
-   - Courier workflow: COURIER_ACCEPTED → PICKED_UP → DELIVERED.
+   - Courier workflow: READY → HANDOFF_CONFIRMED → PICKED_UP → DELIVERED.
    - Courier posts location updates for active orders only.
 
 ## Single domain model (one order, multiple views)
@@ -85,11 +85,11 @@ The admin panel must show full details:
 ### 2) Vendor preparation flow (Vendorka)
 - NEW → ACCEPTED → COOKING → READY
 - For PICKUP orders:
-  - READY_FOR_PICKUP → PICKED_UP_BY_CUSTOMER
+  - READY → HANDOFF_CONFIRMED → COMPLETED
 
 ### 3) Courier delivery flow
-- COURIER_ACCEPTED → PICKED_UP (requires pickup code) → DELIVERED (requires delivery code)
-- Courier location updates stored in OrderTracking and are visible to Client/Admin after acceptance.
+- READY → HANDOFF_CONFIRMED (handoff code) → PICKED_UP → DELIVERED (delivery code)
+- Courier location updates stored in OrderTracking and are visible to Client/Admin after READY.
 
 ## Codes & security (MUST)
 - Pickup and delivery codes exist.

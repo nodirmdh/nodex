@@ -5,11 +5,13 @@ export enum OrderStatus {
   ACCEPTED = "ACCEPTED",
   COOKING = "COOKING",
   READY = "READY",
+  HANDOFF_CONFIRMED = "HANDOFF_CONFIRMED",
   READY_FOR_PICKUP = "READY_FOR_PICKUP",
   PICKED_UP_BY_CUSTOMER = "PICKED_UP_BY_CUSTOMER",
   COURIER_ACCEPTED = "COURIER_ACCEPTED",
   PICKED_UP = "PICKED_UP",
   DELIVERED = "DELIVERED",
+  COMPLETED = "COMPLETED",
   CANCELLED = "CANCELLED",
   CANCELLED_BY_VENDOR = "CANCELLED_BY_VENDOR",
 }
@@ -25,12 +27,14 @@ const transitions: Record<OrderActorRole, Record<OrderStatus, OrderStatus[]>> = 
     NEW: [OrderStatus.ACCEPTED],
     ACCEPTED: [OrderStatus.COOKING],
     COOKING: [OrderStatus.READY],
-    READY: [],
+    READY: [OrderStatus.HANDOFF_CONFIRMED, OrderStatus.DELIVERED],
+    HANDOFF_CONFIRMED: [OrderStatus.COMPLETED],
     READY_FOR_PICKUP: [],
     PICKED_UP_BY_CUSTOMER: [],
     COURIER_ACCEPTED: [],
     PICKED_UP: [],
-    DELIVERED: [],
+    DELIVERED: [OrderStatus.COMPLETED],
+    COMPLETED: [],
     CANCELLED: [],
     CANCELLED_BY_VENDOR: [],
   },
@@ -38,12 +42,14 @@ const transitions: Record<OrderActorRole, Record<OrderStatus, OrderStatus[]>> = 
     NEW: [],
     ACCEPTED: [],
     COOKING: [],
-    READY: [OrderStatus.COURIER_ACCEPTED],
+    READY: [OrderStatus.HANDOFF_CONFIRMED],
+    HANDOFF_CONFIRMED: [OrderStatus.PICKED_UP],
     READY_FOR_PICKUP: [],
     PICKED_UP_BY_CUSTOMER: [],
-    COURIER_ACCEPTED: [OrderStatus.PICKED_UP],
+    COURIER_ACCEPTED: [OrderStatus.HANDOFF_CONFIRMED],
     PICKED_UP: [OrderStatus.DELIVERED],
-    DELIVERED: [],
+    DELIVERED: [OrderStatus.COMPLETED],
+    COMPLETED: [],
     CANCELLED: [],
     CANCELLED_BY_VENDOR: [],
   },
@@ -52,11 +58,13 @@ const transitions: Record<OrderActorRole, Record<OrderStatus, OrderStatus[]>> = 
     ACCEPTED: [],
     COOKING: [],
     READY: [],
-    READY_FOR_PICKUP: [OrderStatus.PICKED_UP_BY_CUSTOMER],
+    HANDOFF_CONFIRMED: [],
+    READY_FOR_PICKUP: [],
     PICKED_UP_BY_CUSTOMER: [],
     COURIER_ACCEPTED: [],
     PICKED_UP: [],
     DELIVERED: [],
+    COMPLETED: [],
     CANCELLED: [],
     CANCELLED_BY_VENDOR: [],
   },
@@ -64,12 +72,14 @@ const transitions: Record<OrderActorRole, Record<OrderStatus, OrderStatus[]>> = 
     NEW: [],
     ACCEPTED: [],
     COOKING: [],
-    READY: [OrderStatus.READY_FOR_PICKUP],
+    READY: [],
+    HANDOFF_CONFIRMED: [],
     READY_FOR_PICKUP: [],
     PICKED_UP_BY_CUSTOMER: [],
     COURIER_ACCEPTED: [],
     PICKED_UP: [],
-    DELIVERED: [],
+    DELIVERED: [OrderStatus.COMPLETED],
+    COMPLETED: [],
     CANCELLED: [],
     CANCELLED_BY_VENDOR: [],
   },
@@ -78,11 +88,13 @@ const transitions: Record<OrderActorRole, Record<OrderStatus, OrderStatus[]>> = 
     ACCEPTED: [OrderStatus.CANCELLED],
     COOKING: [OrderStatus.CANCELLED],
     READY: [OrderStatus.CANCELLED],
+    HANDOFF_CONFIRMED: [OrderStatus.CANCELLED],
     READY_FOR_PICKUP: [OrderStatus.CANCELLED],
     PICKED_UP_BY_CUSTOMER: [OrderStatus.CANCELLED],
     COURIER_ACCEPTED: [OrderStatus.CANCELLED],
     PICKED_UP: [OrderStatus.CANCELLED],
     DELIVERED: [OrderStatus.CANCELLED],
+    COMPLETED: [OrderStatus.CANCELLED],
     CANCELLED: [],
     CANCELLED_BY_VENDOR: [],
   },
@@ -101,13 +113,6 @@ export function assertTransition(
 
   if (actor === "COURIER" && fulfillmentType !== FulfillmentType.DELIVERY) {
     throw new OrderStateError("Courier transitions are only allowed for delivery orders");
-  }
-
-  if (
-    (to === OrderStatus.READY_FOR_PICKUP || to === OrderStatus.PICKED_UP_BY_CUSTOMER) &&
-    fulfillmentType !== FulfillmentType.PICKUP
-  ) {
-    throw new OrderStateError("Pickup transitions are only allowed for pickup orders");
   }
 }
 

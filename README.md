@@ -45,6 +45,11 @@ The platform supports food, retail, pharmacy, and market categories, with delive
 2. `npm run dev:vendor`
 3. Vendor web runs on `http://localhost:5176`
 
+### i18n
+- Supported languages: `ru`, `uz`, `kaa`, `en`.
+- Language detection: Telegram user language → browser language → fallback `ru`.
+- Selection persists in localStorage and can be changed in the app UI.
+
 ### Tests
 1. `npm test`
 

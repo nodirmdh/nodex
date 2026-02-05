@@ -1,0 +1,11 @@
+-- PR-B order lifecycle fields
+ALTER TABLE "Vendor" ADD COLUMN "deliversSelf" BOOLEAN NOT NULL DEFAULT false;
+
+ALTER TABLE "Order" ALTER COLUMN "deliveryCodeHash" DROP NOT NULL;
+ALTER TABLE "Order" ALTER COLUMN "deliveryCodeSalt" DROP NOT NULL;
+
+DO $$
+BEGIN
+  ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'HANDOFF_CONFIRMED';
+  ALTER TYPE "OrderStatus" ADD VALUE IF NOT EXISTS 'COMPLETED';
+END $$;

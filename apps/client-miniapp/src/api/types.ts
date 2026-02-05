@@ -4,10 +4,17 @@ export type VendorSummary = {
   vendor_id: string;
   category: VendorCategory;
   supports_pickup: boolean;
+  delivers_self?: boolean;
   address_text: string | null;
   geo: { lat: number; lng: number };
   name: string;
   description?: string | null;
+  main_image_url?: string | null;
+  gallery_images?: string[];
+  is_active?: boolean;
+  is_blocked?: boolean;
+  is_open_now?: boolean;
+  next_open_at?: string | null;
   rating_avg: number;
   rating_count: number;
   active_promotions: string[];
@@ -21,6 +28,7 @@ export type MenuItem = {
   description: string | null;
   weight_value: number | null;
   weight_unit: string | null;
+  image_url?: string | null;
   promo_badges: string[];
 };
 
@@ -28,10 +36,17 @@ export type VendorDetails = {
   vendor_id: string;
   category: VendorCategory;
   supports_pickup: boolean;
+  delivers_self?: boolean;
   address_text: string | null;
   geo: { lat: number; lng: number };
   name: string;
   description?: string | null;
+  main_image_url?: string | null;
+  gallery_images?: string[];
+  is_active?: boolean;
+  is_blocked?: boolean;
+  is_open_now?: boolean;
+  next_open_at?: string | null;
   rating_avg: number;
   rating_count: number;
   active_promotions: string[];
@@ -67,6 +82,7 @@ export type OrderResponse = {
   buyxgety_count: number;
   gift_count: number;
   delivery_code: string | null;
+  pickup_code: string | null;
 };
 
 export type OrderDetails = {
@@ -75,7 +91,9 @@ export type OrderDetails = {
   vendor_id: string;
   vendor_name?: string;
   vendor_geo?: { lat: number; lng: number };
+  delivers_self?: boolean;
   courier_id?: string | null;
+  courier?: { id: string; full_name: string | null } | null;
   courier_rating_avg?: number | null;
   courier_rating_count?: number | null;
   fulfillment_type: string;
@@ -123,6 +141,7 @@ export type OrderSummary = {
   status: string;
   total: number;
   fulfillment_type: string;
+  courier?: { id: string; full_name: string | null } | null;
   created_at: string;
 };
 
@@ -154,6 +173,9 @@ export type ClientProfile = {
   phone: string | null;
   telegram_username: string | null;
   about: string | null;
+  birth_date?: string | null;
+  avatar_url?: string | null;
+  avatar_file_id?: string | null;
 };
 
 export type AddressEntry = {

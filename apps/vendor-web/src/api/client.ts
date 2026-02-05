@@ -8,6 +8,7 @@ export type VendorOrderSummary = {
   status: string;
   vendor_id: string;
   fulfillment_type: string;
+  courier?: { id: string; full_name: string | null } | null;
   items_subtotal: number;
   total: number;
   delivery_comment: string | null;
@@ -19,8 +20,10 @@ export type VendorOrderDetails = {
   order_id: string;
   status: string;
   vendor_id: string;
+  delivers_self?: boolean;
   client_id: string | null;
   courier_id: string | null;
+  courier?: { id: string; full_name: string | null } | null;
   fulfillment_type: string;
   delivery_location: { lat: number; lng: number } | null;
   delivery_comment: string | null;
@@ -102,6 +105,19 @@ export type VendorProfile = {
   address_text: string | null;
   opening_hours: string | null;
   supports_pickup: boolean;
+  delivers_self?: boolean;
+  is_active?: boolean;
+  is_blocked?: boolean;
+  main_image_url?: string | null;
+  gallery_images?: string[];
+  timezone?: string | null;
+  schedule?: Array<{
+    weekday: string;
+    open_time: string | null;
+    close_time: string | null;
+    closed: boolean;
+    is24h: boolean;
+  }>;
   payment_methods: { cash: boolean; card: boolean };
   geo: { lat: number; lng: number };
 };
@@ -125,6 +141,8 @@ export class ApiClient {
   private baseUrl: string;
   private vendorId: string | null;
   private devMode: boolean;
+  private token: string | null;
+  private tokenKey = "nodex_vendor_token";
 
   constructor(options: ApiClientOptions = {}) {
     this.baseUrl =
@@ -134,10 +152,43 @@ export class ApiClient {
     this.vendorId = options.vendorId ?? null;
     this.devMode =
       import.meta.env.VITE_DEV_MODE === "true" || import.meta.env.VITE_DEV_MODE === "1";
+    this.token = window.localStorage.getItem(this.tokenKey);
   }
 
   setVendorId(vendorId: string | null) {
     this.vendorId = vendorId;
+  }
+
+  isDevMode() {
+    return this.devMode;
+  }
+
+  getToken() {
+    return this.token;
+  }
+
+  setToken(token: string | null) {
+    this.token = token;
+    if (token) {
+      window.localStorage.setItem(this.tokenKey, token);
+    } else {
+      window.localStorage.removeItem(this.tokenKey);
+    }
+  }
+
+  async login(login: string, password: string): Promise<{ token: string; vendor_id: string; is_active: boolean }> {
+    const response = await fetch(`${this.baseUrl}/vendor/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ login, password }),
+    });
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(message || `Request failed: ${response.status}`);
+    }
+    const data = (await response.json()) as { token: string; vendor_id: string; is_active: boolean };
+    this.setToken(data.token);
+    return data;
   }
 
   async listActiveOrders(): Promise<VendorOrderSummary[]> {
@@ -161,8 +212,16 @@ export class ApiClient {
   async updateOrderStatus(
     orderId: string,
     status: "COOKING" | "READY",
-  ): Promise<{ order_id: string; status: string; pickup_code: string | null }> {
+  ): Promise<{ order_id: string; status: string; handoff_code: string | null }> {
     return this.request(`/vendor/orders/${orderId}/status`, "POST", { status });
+  }
+
+  async confirmPickup(orderId: string, pickupCode: string): Promise<{ order_id: string; status: string }> {
+    return this.request(`/vendor/orders/${orderId}/pickup`, "POST", { pickup_code: pickupCode });
+  }
+
+  async confirmDelivery(orderId: string, deliveryCode: string): Promise<{ order_id: string; status: string }> {
+    return this.request(`/vendor/orders/${orderId}/deliver`, "POST", { delivery_code: deliveryCode });
   }
 
   async listMenu(): Promise<MenuItem[]> {
@@ -308,18 +367,49 @@ export class ApiClient {
     await this.request<{ deleted: boolean }>(`/vendor/menu/${id}`, "DELETE");
   }
 
-  private async request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
-    if (this.devMode && !this.vendorId) {
-      throw new Error("vendorId is required in DEV_MODE");
-    }
+  async uploadFile(file: File): Promise<{ file_id: string; public_url: string }> {
     const headers: Record<string, string> = {};
     if (this.devMode) {
+      if (!this.vendorId) {
+        throw new Error("vendorId is required in DEV_MODE");
+      }
       headers["x-dev-user"] = "vendor";
-    } else {
-      headers["x-role"] = "VENDOR";
-    }
-    if (this.vendorId) {
       headers["x-vendor-id"] = this.vendorId;
+    } else if (this.token) {
+      headers.Authorization = `Bearer ${this.token}`;
+    } else {
+      throw new Error("vendor auth is required");
+    }
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await fetch(`${this.baseUrl}/files/upload`, {
+      method: "POST",
+      headers,
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(message || `Request failed: ${response.status}`);
+    }
+
+    return response.json() as Promise<{ file_id: string; public_url: string }>;
+  }
+
+  private async request<T>(path: string, method = "GET", body?: unknown): Promise<T> {
+    const headers: Record<string, string> = {};
+    if (this.devMode) {
+      if (!this.vendorId) {
+        throw new Error("vendorId is required in DEV_MODE");
+      }
+      headers["x-dev-user"] = "vendor";
+      headers["x-vendor-id"] = this.vendorId;
+    } else if (this.token) {
+      headers.Authorization = `Bearer ${this.token}`;
+    } else {
+      throw new Error("vendor auth is required");
     }
     if (body !== undefined) {
       headers["Content-Type"] = "application/json";

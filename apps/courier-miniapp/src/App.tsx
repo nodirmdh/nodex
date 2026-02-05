@@ -1,17 +1,26 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState, type FormEvent } from "react";
 import { NavigationMap } from "@nodex/navigation";
+import { Button, Card, EmptyState, Input, Select, Skeleton, StatusBadge, toast } from "@nodex/ui";
+import { ClipboardList, Home, Star, User, Wallet } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { LANGUAGES, formatCurrency, formatDateTime, formatNumber, getLanguage, setLanguage, translatePayment, translateStatus } from "@nodex/i18n";
 
 import {
   acceptOrder,
+  confirmPickup,
   getCourierBalance,
   getCourierOrder,
   getCourierProfile,
+  getCourierToken,
   listCourierHistory,
   listCourierRatings,
   listAvailableOrders,
+  loginCourier,
   sendLocation,
+  setCourierToken,
   submitDelivery,
-  submitPickup,
+  submitHandoff,
+  uploadFile,
   updateCourierProfile,
 } from "./api/client";
 import type {
@@ -23,10 +32,13 @@ import type {
 } from "./api/types";
 import { useLocalStorage } from "./hooks/useLocalStorage";
 import { getTelegramWebApp } from "./telegram";
+import { resolveAssetUrl } from "./utils/resolveAssetUrl";
 
 type Screen = "home" | "history" | "balance" | "rating" | "profile";
 
 export function App() {
+  const { t } = useTranslation();
+  const [authToken, setAuthTokenState] = useState<string | null>(getCourierToken());
   const [screen, setScreen] = useState<Screen>("home");
   const [orders, setOrders] = useState<AvailableOrder[]>([]);
   const [activeOrderId, setActiveOrderId] = useLocalStorage<string | null>(
@@ -48,7 +60,8 @@ export function App() {
     full_name: "",
     phone: "",
     telegram_username: "",
-    photo_url: "",
+    avatar_url: "",
+    avatar_file_id: "",
     delivery_method: "WALK",
     is_available: true,
     max_active_orders: "1",
@@ -58,11 +71,28 @@ export function App() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
+  const canAccess = Boolean(authToken);
+
+  useEffect(() => {
+    document.body.classList.toggle("modal-open", Boolean(mapPreviewOrder));
+    return () => {
+      document.body.classList.remove("modal-open");
+    };
+  }, [mapPreviewOrder]);
+
   useEffect(() => {
     getTelegramWebApp()?.ready?.();
-    void loadAvailable();
-    void loadProfile();
-  }, []);
+    if (canAccess) {
+      void loadAvailable();
+      void loadProfile();
+    }
+  }, [canAccess]);
+
+  useEffect(() => {
+    if (error) {
+      toast.error(error);
+    }
+  }, [error]);
 
   useEffect(() => {
     if (!activeOrderId) {
@@ -89,7 +119,7 @@ export function App() {
       const data = await listAvailableOrders();
       setOrders(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load orders");
+      setError(err instanceof Error ? err.message : t("errors.loadOrders"));
     } finally {
       setIsLoading(false);
     }
@@ -105,13 +135,14 @@ export function App() {
         full_name: data.full_name ?? "",
         phone: data.phone ?? "",
         telegram_username: data.telegram_username ?? "",
-        photo_url: data.photo_url ?? "",
+        avatar_url: data.avatar_url ?? "",
+        avatar_file_id: data.avatar_file_id ?? "",
         delivery_method: data.delivery_method ?? "WALK",
         is_available: data.is_available,
         max_active_orders: data.max_active_orders.toString(),
       });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load profile");
+      setError(err instanceof Error ? err.message : t("errors.loadProfile"));
     } finally {
       setIsLoading(false);
     }
@@ -124,7 +155,7 @@ export function App() {
       const data = await listCourierHistory();
       setHistoryOrders(data.orders);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load history");
+      setError(err instanceof Error ? err.message : t("errors.loadHistory"));
     } finally {
       setIsLoading(false);
     }
@@ -137,7 +168,7 @@ export function App() {
       const data = await getCourierBalance({ range: balanceRange });
       setBalance(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load balance");
+      setError(err instanceof Error ? err.message : t("errors.loadBalance"));
     } finally {
       setIsLoading(false);
     }
@@ -150,7 +181,7 @@ export function App() {
       const data = await listCourierRatings();
       setRatings(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load ratings");
+      setError(err instanceof Error ? err.message : t("errors.loadRatings"));
     } finally {
       setIsLoading(false);
     }
@@ -163,7 +194,7 @@ export function App() {
       const data = await getCourierOrder(orderId);
       setActiveOrder(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load order");
+      setError(err instanceof Error ? err.message : t("errors.loadOrder"));
     } finally {
       setIsLoading(false);
     }
@@ -178,24 +209,57 @@ export function App() {
       setTrackingEnabled(true);
       await loadAvailable();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to accept order");
+      setError(err instanceof Error ? err.message : t("errors.acceptOrder"));
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handlePickup = async () => {
+  const handleHandoff = async () => {
     if (!activeOrderId) {
       return;
     }
     setIsLoading(true);
     setError(null);
     try {
-      await submitPickup(activeOrderId, pickupCode.trim());
+      await submitHandoff(activeOrderId, pickupCode.trim());
       setPickupCode("");
       await refreshActive(activeOrderId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Pickup failed");
+      setError(err instanceof Error ? err.message : t("errors.pickupFailed"));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const resetSessionState = () => {
+    setActiveOrderId(null);
+    setActiveOrder(null);
+    setTrackingEnabled(false);
+    setPickupCode("");
+    setDeliveryCode("");
+    setLastLocation(null);
+    setLastCoords(null);
+    setLastTrackingStatus(null);
+  };
+
+  const setAuthToken = (token: string | null) => {
+    resetSessionState();
+    setCourierToken(token);
+    setAuthTokenState(token);
+  };
+
+  const handlePickupConfirm = async () => {
+    if (!activeOrderId) {
+      return;
+    }
+    setIsLoading(true);
+    setError(null);
+    try {
+      await confirmPickup(activeOrderId);
+      await refreshActive(activeOrderId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("errors.pickupFailed"));
     } finally {
       setIsLoading(false);
     }
@@ -214,7 +278,7 @@ export function App() {
       setActiveOrderId(null);
       setTrackingEnabled(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Delivery failed");
+      setError(err instanceof Error ? err.message : t("errors.deliveryFailed"));
     } finally {
       setIsLoading(false);
     }
@@ -222,7 +286,7 @@ export function App() {
 
   const pushLocation = async (orderId: string) => {
     if (!navigator.geolocation) {
-      setLastTrackingStatus("Geolocation not available");
+      setLastTrackingStatus(t("courier.trackingGeoUnavailable"));
       return;
     }
     navigator.geolocation.getCurrentPosition(
@@ -235,12 +299,12 @@ export function App() {
           setLastCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude });
           setLastTrackingStatus(`Sent (${response.status})`);
         } catch {
-          setLastTrackingStatus("Failed to send");
+          setLastTrackingStatus(t("courier.trackingSendFailed"));
           return;
         }
       },
       () => {
-        setLastTrackingStatus("Location permission denied");
+        setLastTrackingStatus(t("courier.trackingPermissionDenied"));
         return;
       },
     );
@@ -271,54 +335,72 @@ export function App() {
 
   const remainingSlots = profile ? profile.remaining_slots : null;
 
+  if (!canAccess) {
+    return (
+      <CourierLogin
+        onSuccess={(token) => {
+          setAuthToken(token);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="app">
       <header className="top-bar">
-        <div className="brand">Nodex Courier</div>
+        <div className="brand">{t("courier.title")}</div>
         <nav className="tabs">
           <button className={screen === "home" ? "active" : ""} onClick={() => setScreen("home")}>
-            Home
+            <Home size={16} /> {t("nav.home")}
           </button>
           <button className={screen === "history" ? "active" : ""} onClick={() => setScreen("history")}>
-            Orders
+            <ClipboardList size={16} /> {t("nav.orders")}
           </button>
           <button className={screen === "balance" ? "active" : ""} onClick={() => setScreen("balance")}>
-            Balance
+            <Wallet size={16} /> {t("nav.balance")}
           </button>
           <button className={screen === "rating" ? "active" : ""} onClick={() => setScreen("rating")}>
-            Rating
+            <Star size={16} /> {t("nav.rating")}
           </button>
           <button className={screen === "profile" ? "active" : ""} onClick={() => setScreen("profile")}>
-            Profile
+            <User size={16} /> {t("nav.profile")}
           </button>
         </nav>
+        <button
+          className="ghost"
+          onClick={() => {
+            setAuthToken(null);
+            toast.success(t("courier.logoutSuccess"));
+          }}
+        >
+          {t("courier.logout")}
+        </button>
       </header>
 
       {error && <div className="error">{error}</div>}
-      {isLoading && <div className="loading">Loading...</div>}
+      {isLoading && <div className="loading">{t("common.loading")}</div>}
 
       {screen === "home" && (
         <section className="panel">
-          <h2>Home</h2>
           <div className="inline">
             <button className="secondary" onClick={() => void loadAvailable()}>
-              Refresh available
+              {t("courier.refreshAvailable")}
             </button>
             {activeOrderId && (
               <button className="primary" onClick={() => void refreshActive(activeOrderId)}>
-                Refresh active
+                {t("courier.refreshActive")}
               </button>
             )}
             <button className="secondary" onClick={() => void loadProfile()}>
-              Refresh profile
+              {t("courier.refreshProfile")}
             </button>
           </div>
 
           {profile && (
             <div className="card">
-              <div className="card-title">Availability</div>
+              <div className="card-title">{t("courier.availability")}</div>
               <div className="card-meta">
-                Remaining slots: {remainingSlots !== null ? remainingSlots : "-"}
+                {t("courier.remainingSlots")}: {remainingSlots !== null ? formatNumber(remainingSlots) : "-"}
               </div>
               <div className="inline">
                 <label className="inline">
@@ -329,7 +411,7 @@ export function App() {
                       setProfileForm({ ...profileForm, is_available: event.target.checked })
                     }
                   />
-                  Available
+                  {t("courier.available")}
                 </label>
                 <input
                   className="input"
@@ -352,13 +434,13 @@ export function App() {
                       });
                       setProfile(updated);
                     } catch (err) {
-                      setError(err instanceof Error ? err.message : "Failed to update availability");
+                      setError(err instanceof Error ? err.message : t("errors.updateAvailability"));
                     } finally {
                       setIsLoading(false);
                     }
                   }}
                 >
-                  Save availability
+                  {t("courier.saveAvailability")}
                 </button>
               </div>
             </div>
@@ -366,54 +448,83 @@ export function App() {
 
           {activeOrderId && activeOrder && (
             <div className="card">
-              <div className="card-title">Active order</div>
-              <div className="card-meta">Order: {activeOrder.order_id}</div>
-              <div className="card-meta">Status: {activeOrder.status}</div>
+              {activeOrder.fulfillment_type === "PICKUP" && (
+                <div className="card-meta">{t("courier.pickupNoAction")}</div>
+              )}
+              <div className="card-title">{t("courier.activeOrder")}</div>
+              <div className="card-meta">{t("courier.order")}: {activeOrder.order_id}</div>
+              <div className="card-meta">{t("common.status")}: {translateStatus(activeOrder.status)}</div>
               <div className="card-meta">
-                Vendor: {activeOrder.vendor_name ?? activeOrder.vendor_id}
+                {t("courier.vendor")}: {activeOrder.vendor_name ?? activeOrder.vendor_id}
               </div>
               <div className="card-meta">
-                Vendor address: {activeOrder.vendor_address ?? "-"}
+                {t("courier.vendorAddress")}: {activeOrder.vendor_address ?? "-"}
               </div>
               <div className="card-meta">
-                Address: {activeOrder.address_text ?? "-"}
+                {t("client.address")}: {activeOrder.address_text ?? "-"}
               </div>
               <div className="card-meta">
-                Entrance/Apt: {activeOrder.address_entrance ?? "-"} /{" "}
+                {t("client.entranceApt")}: {activeOrder.address_entrance ?? "-"} /{" "}
                 {activeOrder.address_apartment ?? "-"}
               </div>
               <div className="card-meta">
-                Delivery location:{" "}
+                {t("courier.deliveryLocation")}:{" "}
                 {activeOrder.delivery_location
                   ? `${activeOrder.delivery_location.lat}, ${activeOrder.delivery_location.lng}`
                   : "-"}
               </div>
               <div className="card-meta">
-                Receiver phone: {activeOrder.receiver_phone ?? "-"}
+                {t("client.receiverPhone")}: {activeOrder.receiver_phone ?? "-"}
               </div>
               <div className="card-meta">
-                Delivery comment: {activeOrder.delivery_comment ?? "-"}
+                {t("client.deliveryComment")}: {activeOrder.delivery_comment ?? "-"}
               </div>
               <div className="card-meta">
-                Payment: {activeOrder.payment_method ?? "-"}{" "}
-                {activeOrder.change_for_amount ? `(change ${activeOrder.change_for_amount})` : ""}
+                {t("client.payment")}: {activeOrder.payment_method ? translatePayment(activeOrder.payment_method) : "-"}{" "}
+                {activeOrder.change_for_amount ? `(${t("client.change")} ${formatNumber(activeOrder.change_for_amount)})` : ""}
               </div>
               <div className="card-meta">
-                Utensils: {activeOrder.utensils_count}
+                {t("client.utensils")}: {formatNumber(activeOrder.utensils_count)}
               </div>
-              <div className="card-meta">Total: {activeOrder.total}</div>
-              <div className="card-meta">Courier fee: {activeOrder.courier_fee}</div>
-              <div className="stepper">
-                <div className={`step ${activeOrder.status !== "NEW" ? "done" : "active"}`}>
-                  Accept
+              <div className="card-meta">{t("common.total")}: {formatCurrency(activeOrder.total)}</div>
+              <div className="card-meta">{t("courier.courierFee")}: {formatCurrency(activeOrder.courier_fee)}</div>
+              {activeOrder.fulfillment_type === "DELIVERY" && (
+                <div className="stepper">
+                  <div
+                    className={`step ${
+                      ["HANDOFF_CONFIRMED", "PICKED_UP", "DELIVERED", "COMPLETED"].includes(activeOrder.status)
+                        ? "done"
+                        : activeOrder.status === "READY"
+                          ? "active"
+                          : ""
+                    }`}
+                  >
+                    {t("courier.handoff")}
+                  </div>
+                  <div
+                    className={`step ${
+                      ["PICKED_UP", "DELIVERED", "COMPLETED"].includes(activeOrder.status)
+                        ? "done"
+                        : activeOrder.status === "HANDOFF_CONFIRMED"
+                          ? "active"
+                          : ""
+                    }`}
+                  >
+                    {t("courier.pickup")}
+                  </div>
+                  <div
+                    className={`step ${
+                      ["DELIVERED", "COMPLETED"].includes(activeOrder.status)
+                        ? "done"
+                        : activeOrder.status === "PICKED_UP"
+                          ? "active"
+                          : ""
+                    }`}
+                  >
+                    {t("courier.deliver")}
+                  </div>
                 </div>
-                <div className={`step ${activeOrder.status === "PICKED_UP" || activeOrder.status === "DELIVERED" ? "done" : activeOrder.status === "COURIER_ACCEPTED" ? "active" : ""}`}>
-                  Pickup
-                </div>
-                <div className={`step ${activeOrder.status === "DELIVERED" ? "done" : activeOrder.status === "PICKED_UP" ? "active" : ""}`}>
-                  Deliver
-                </div>
-              </div>
+              )}
 
               <div className="panel">
                 <NavigationMap
@@ -423,7 +534,7 @@ export function App() {
                       ? {
                           lat: activeOrder.vendor_geo.lat,
                           lng: activeOrder.vendor_geo.lng,
-                          label: "Pickup",
+                          label: t("courier.pickupPoint"),
                         }
                       : null
                   }
@@ -432,7 +543,7 @@ export function App() {
                       ? {
                           lat: activeOrder.delivery_location.lat,
                           lng: activeOrder.delivery_location.lng,
-                          label: "Dropoff",
+                          label: t("courier.dropoffPoint"),
                         }
                       : null
                   }
@@ -440,24 +551,33 @@ export function App() {
                 />
               </div>
 
-              {activeOrder.status === "COURIER_ACCEPTED" && (
+              {activeOrder.fulfillment_type === "DELIVERY" && activeOrder.status === "READY" && (
                 <div className="field">
-                  <label>Pickup code</label>
+                  <label>{t("courier.handoffCode")}</label>
                   <div className="inline">
                     <input
                       className="input"
                       value={pickupCode}
                       onChange={(event) => setPickupCode(event.target.value)}
                     />
-                    <button className="primary" onClick={() => void handlePickup()}>
-                      Confirm pickup
+                    <button className="primary" onClick={() => void handleHandoff()}>
+                      {t("courier.confirmHandoff")}
                     </button>
                   </div>
                 </div>
               )}
-              {activeOrder.status === "PICKED_UP" && (
+              {activeOrder.fulfillment_type === "DELIVERY" && activeOrder.status === "HANDOFF_CONFIRMED" && (
                 <div className="field">
-                  <label>Delivery code</label>
+                  <div className="inline">
+                    <button className="primary" onClick={() => void handlePickupConfirm()}>
+                      {t("courier.confirmPickup")}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {activeOrder.fulfillment_type === "DELIVERY" && activeOrder.status === "PICKED_UP" && (
+                <div className="field">
+                  <label>{t("courier.deliveryCode")}</label>
                   <div className="inline">
                     <input
                       className="input"
@@ -465,40 +585,40 @@ export function App() {
                       onChange={(event) => setDeliveryCode(event.target.value)}
                     />
                     <button className="primary" onClick={() => void handleDeliver()}>
-                      Confirm delivery
+                      {t("courier.confirmDelivery")}
                     </button>
                   </div>
                 </div>
               )}
 
               <div className="field">
-                <label>Location tracking</label>
+                <label>{t("courier.tracking")}</label>
                 <div className="inline">
                   <button
                     className={trackingEnabled ? "primary" : "secondary"}
                     onClick={() => setTrackingEnabled((prev) => !prev)}
                   >
-                    {trackingEnabled ? "Stop" : "Start"}
+                    {trackingEnabled ? t("courier.stop") : t("courier.start")}
                   </button>
                   <button
                     className="secondary"
                     onClick={() => activeOrderId && void pushLocation(activeOrderId)}
                     disabled={!trackingEnabled}
                   >
-                    Send now
+                    {t("courier.sendNow")}
                   </button>
                 </div>
                 <div className="card-meta">
-                  Last location: {lastLocation ?? "-"}
+                  {t("courier.lastLocation")}: {lastLocation ?? "-"}
                 </div>
                 <div className="card-meta">
-                  Last status: {lastTrackingStatus ?? "-"}
+                  {t("courier.lastStatus")}: {lastTrackingStatus ?? "-"}
                 </div>
               </div>
             </div>
           )}
 
-          <h3>Available orders</h3>
+          <h3>{t("courier.availableOrders")}</h3>
           <div className="card-list">
             {orders.map((order) => (
               <AvailableOrderCard
@@ -509,21 +629,20 @@ export function App() {
                 estimateDistance={estimateDistance}
               />
             ))}
-            {orders.length === 0 && <p>No available orders.</p>}
+            {orders.length === 0 && <p>{t("courier.noAvailableOrders")}</p>}
           </div>
         </section>
       )}
 
       {screen === "history" && (
         <section className="panel">
-          <h2>Orders history</h2>
           <div className="inline">
             <button className="secondary" onClick={() => void loadHistory()}>
-              Refresh history
+              {t("courier.refreshHistory")}
             </button>
           </div>
           {historyOrders.length === 0 ? (
-            <p>No completed orders yet.</p>
+            <p>{t("courier.noHistory")}</p>
           ) : (
             <div className="list">
               {historyOrders.map((entry) => (
@@ -531,12 +650,12 @@ export function App() {
                   <div>
                     <div>{entry.vendor_name}</div>
                     <div className="muted">
-                      {entry.order_id.slice(0, 8)} • {entry.status}
+                      {entry.order_id.slice(0, 8)} • {translateStatus(entry.status)}
                     </div>
-                    <div className="muted">Courier fee: {entry.courier_fee}</div>
+                    <div className="muted">{t("courier.courierFee")}: {formatCurrency(entry.courier_fee)}</div>
                   </div>
                   <div className="muted">
-                    {new Date(entry.created_at).toLocaleString()}
+                    {formatDateTime(entry.created_at)}
                   </div>
                 </div>
               ))}
@@ -546,176 +665,298 @@ export function App() {
       )}
 
       {screen === "balance" && (
-        <section className="panel">
-          <h2>Balance</h2>
-          <div className="inline">
-            <select
-              value={balanceRange}
-              onChange={(event) => setBalanceRange(event.target.value as "today" | "week" | "month")}
-            >
-              <option value="today">Today</option>
-              <option value="week">Week</option>
-              <option value="month">Month</option>
-            </select>
-            <button className="secondary" onClick={() => void loadBalance()}>
-              Load
-            </button>
-          </div>
-          {balance ? (
-            <div className="list">
-              <div className="row">
-                <div>Completed</div>
-                <div className="muted">{balance.completed_count}</div>
-              </div>
-              <div className="row">
-                <div>Gross earnings</div>
-                <div className="muted">{balance.gross_earnings}</div>
-              </div>
-              <div className="row">
-                <div>Average per order</div>
-                <div className="muted">{balance.average_per_order}</div>
-              </div>
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">{t("nav.balance")}</h2>
+              <p className="text-sm text-slate-500">{t("courier.balanceSubtitle")}</p>
             </div>
-          ) : (
-            <p>Load balance to view stats.</p>
-          )}
+            <div className="flex flex-wrap gap-2">
+              <Select
+                value={balanceRange}
+                onChange={(event) =>
+                  setBalanceRange(event.target.value as "today" | "week" | "month")
+                }
+              >
+                <option value="today">{t("range.today")}</option>
+                <option value="week">{t("range.week")}</option>
+                <option value="month">{t("range.month")}</option>
+              </Select>
+              <Button variant="secondary" onClick={() => void loadBalance()}>
+                {t("common.refresh")}
+              </Button>
+            </div>
+          </div>
+
+          <Card>
+            {isLoading ? (
+              <div className="grid gap-2">
+                <Skeleton className="h-6" />
+                <Skeleton className="h-6" />
+                <Skeleton className="h-6" />
+              </div>
+            ) : balance ? (
+              <div className="grid gap-3 text-sm text-slate-600">
+                <div className="flex justify-between">
+                  <span>{t("courier.completed")}</span>
+                  <span>{formatNumber(balance.completed_count)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>{t("courier.grossEarnings")}</span>
+                  <span>{formatCurrency(balance.gross_earnings)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>{t("courier.avgPerOrder")}</span>
+                  <span>{formatCurrency(balance.average_per_order)}</span>
+                </div>
+              </div>
+            ) : (
+              <EmptyState
+                title={t("empty.noData")}
+                description={t("courier.balanceEmpty")}
+              />
+            )}
+          </Card>
         </section>
       )}
 
       {screen === "rating" && (
-        <section className="panel">
-          <h2>Rating</h2>
-          <div className="inline">
-            <button className="secondary" onClick={() => void loadProfile()}>
-              Refresh
-            </button>
-            <button className="secondary" onClick={() => void loadRatings()}>
-              Load reviews
-            </button>
-          </div>
-          {profile ? (
-            <div className="list">
-              <div className="card-meta">
-                Rating: {profile.rating_avg.toFixed(1)} ({profile.rating_count})
-              </div>
-              {ratings.length === 0 ? (
-                <div className="muted">No ratings yet.</div>
-              ) : (
-                ratings.map((entry) => (
-                  <div key={entry.order_id} className="row">
-                    <div>
-                      <div>Order {entry.order_id}</div>
-                      <div className="muted">
-                        {entry.courier_stars ?? "-"} stars
-                      </div>
-                      <div className="muted">{entry.courier_comment ?? "-"}</div>
-                    </div>
-                    <div className="muted">
-                      {new Date(entry.created_at).toLocaleString()}
-                    </div>
-                  </div>
-                ))
-              )}
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">{t("nav.rating")}</h2>
+              <p className="text-sm text-slate-500">{t("courier.ratingSubtitle")}</p>
             </div>
-          ) : (
-            <p>Load rating to view stats.</p>
-          )}
+            <div className="flex flex-wrap gap-2">
+              <Button variant="secondary" onClick={() => void loadProfile()}>
+                {t("common.refresh")}
+              </Button>
+              <Button variant="secondary" onClick={() => void loadRatings()}>
+                {t("courier.loadReviews")}
+              </Button>
+            </div>
+          </div>
+          <Card>
+            {isLoading ? (
+              <div className="grid gap-2">
+                <Skeleton className="h-6" />
+                <Skeleton className="h-6" />
+              </div>
+            ) : profile ? (
+              <div className="grid gap-3">
+                <div className="text-sm text-slate-600">
+                  {t("courier.ratingValue", {
+                    value: profile.rating_avg.toFixed(1),
+                    count: formatNumber(profile.rating_count),
+                  })}
+                </div>
+                {ratings.length === 0 ? (
+                  <EmptyState
+                    title={t("empty.noReviews")}
+                    description={t("courier.reviewsEmpty")}
+                  />
+                ) : (
+                  <div className="grid gap-3">
+                    {ratings.map((entry) => (
+                      <Card key={entry.order_id} className="bg-slate-50">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-900">
+                              {t("courier.orderLabel", { id: entry.order_id })}
+                            </div>
+                            <div className="text-xs text-slate-400">
+                              {t("courier.stars", { count: entry.courier_stars ?? "-" })}
+                            </div>
+                            <div className="text-xs text-slate-400">
+                              {entry.courier_comment ?? "-"}
+                            </div>
+                          </div>
+                          <div className="text-xs text-slate-400">
+                            {formatDateTime(entry.created_at)}
+                          </div>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <EmptyState
+                title={t("courier.ratingUnavailable")}
+                description={t("courier.ratingUnavailableDesc")}
+              />
+            )}
+          </Card>
         </section>
       )}
 
       {screen === "profile" && (
-        <section className="panel">
-          <h2>Profile</h2>
-          <div className="inline">
-            <button className="secondary" onClick={() => void loadProfile()}>
-              Refresh
-            </button>
+        <section className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">{t("nav.profile")}</h2>
+              <p className="text-sm text-slate-500">{t("courier.profileSubtitle")}</p>
+            </div>
+            <Button variant="secondary" onClick={() => void loadProfile()}>
+              {t("common.refresh")}
+            </Button>
           </div>
-          {profile ? (
-            <div className="list">
-              <div className="details-grid">
-                <label>
-                  Full name
-                  <input
-                    className="input"
+          <Card>
+            <div className="mb-4 flex items-center gap-2 text-sm text-slate-600">
+              <span>{t("client.language")}</span>
+              <select
+                className="input"
+                value={getLanguage()}
+                onChange={(event) => setLanguage(event.target.value as "ru" | "uz" | "kaa" | "en")}
+              >
+                {LANGUAGES.map((lang) => (
+                  <option key={lang.code} value={lang.code}>
+                    {lang.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {isLoading ? (
+              <div className="grid gap-2">
+                <Skeleton className="h-6" />
+                <Skeleton className="h-6" />
+                <Skeleton className="h-6" />
+              </div>
+            ) : profile ? (
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="text-sm text-slate-600">
+                  {t("courier.courierId")}:{" "}
+                  <span className="font-medium text-slate-900">{profile.courier_id}</span>
+                </div>
+                <label className="text-sm text-slate-600">
+                  {t("fields.fullName")}
+                  <Input
                     value={profileForm.full_name}
                     onChange={(event) =>
                       setProfileForm({ ...profileForm, full_name: event.target.value })
                     }
+                    className="mt-1"
                   />
                 </label>
-                <label>
-                  Phone
-                  <input
-                    className="input"
+                <label className="text-sm text-slate-600">
+                  {t("fields.phone")}
+                  <Input
                     value={profileForm.phone}
                     onChange={(event) =>
                       setProfileForm({ ...profileForm, phone: event.target.value })
                     }
+                    className="mt-1"
                   />
                 </label>
-                <label>
-                  Telegram username
-                  <input
-                    className="input"
+                <label className="text-sm text-slate-600">
+                  {t("fields.telegramUsername")}
+                  <Input
                     value={profileForm.telegram_username}
                     onChange={(event) =>
                       setProfileForm({ ...profileForm, telegram_username: event.target.value })
                     }
+                    className="mt-1"
                   />
                 </label>
-                <label>
-                  Photo URL
-                  <input
-                    className="input"
-                    value={profileForm.photo_url}
-                    onChange={(event) =>
-                      setProfileForm({ ...profileForm, photo_url: event.target.value })
-                    }
-                  />
-                </label>
-                <label>
-                  Delivery method
-                  <select
+                <div className="text-sm text-slate-600">
+                  <div className="mb-2 font-medium">{t("fields.avatar")}</div>
+                  <div className="flex items-center gap-3">
+                    {profileForm.avatar_url ? (
+                      <img
+                        className="h-14 w-14 rounded-full object-cover"
+                        src={resolveAssetUrl(profileForm.avatar_url)}
+                        alt={t("fields.avatar")}
+                      />
+                    ) : (
+                      <div className="h-14 w-14 rounded-full bg-slate-200" />
+                    )}
+                    <div className="flex flex-col gap-2">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={async (event) => {
+                          const file = event.target.files?.[0];
+                          if (!file) return;
+                          try {
+                            const result = await uploadFile(file);
+                            setProfileForm((prev) => ({
+                              ...prev,
+                              avatar_url: result.public_url,
+                              avatar_file_id: result.file_id,
+                            }));
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : t("errors.uploadFailed"));
+                          }
+                        }}
+                      />
+                      {profileForm.avatar_url && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() =>
+                            setProfileForm((prev) => ({
+                              ...prev,
+                              avatar_url: "",
+                              avatar_file_id: "",
+                            }))
+                          }
+                        >
+                          {t("common.remove")}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <label className="text-sm text-slate-600">
+                  {t("courier.deliveryMethod")}
+                  <Select
                     value={profileForm.delivery_method}
                     onChange={(event) =>
                       setProfileForm({ ...profileForm, delivery_method: event.target.value })
                     }
+                    className="mt-1"
                   >
-                    <option value="WALK">Пешком</option>
-                    <option value="BIKE">Вело</option>
-                    <option value="MOTO">Мото</option>
-                    <option value="CAR">Авто</option>
-                  </select>
+                    <option value="WALK">{t("courier.methodWalk")}</option>
+                    <option value="BIKE">{t("courier.methodBike")}</option>
+                    <option value="MOTO">{t("courier.methodMoto")}</option>
+                    <option value="CAR">{t("courier.methodCar")}</option>
+                  </Select>
                 </label>
               </div>
-              <button
-                className="primary"
-                onClick={async () => {
-                  setIsLoading(true);
-                  setError(null);
-                  try {
-                    const updated = await updateCourierProfile({
-                      full_name: profileForm.full_name || null,
-                      phone: profileForm.phone || null,
-                      telegram_username: profileForm.telegram_username || null,
-                      photo_url: profileForm.photo_url || null,
-                      delivery_method: profileForm.delivery_method || null,
-                    });
-                    setProfile(updated);
-                  } catch (err) {
-                    setError(err instanceof Error ? err.message : "Failed to save profile");
-                  } finally {
-                    setIsLoading(false);
-                  }
-                }}
-              >
-                Save
-              </button>
-            </div>
-          ) : (
-            <p>Profile details will appear here.</p>
-          )}
+            ) : (
+              <EmptyState
+                title={t("courier.profileUnavailable")}
+                description={t("courier.profileUnavailableDesc")}
+              />
+            )}
+            {profile && (
+              <div className="mt-6">
+                <Button
+                  onClick={async () => {
+                    setIsLoading(true);
+                    setError(null);
+                    try {
+                      const updated = await updateCourierProfile({
+                        full_name: profileForm.full_name || null,
+                        phone: profileForm.phone || null,
+                        telegram_username: profileForm.telegram_username || null,
+                        avatar_url: profileForm.avatar_url || null,
+                        avatar_file_id: profileForm.avatar_file_id || null,
+                        delivery_method: profileForm.delivery_method || null,
+                      });
+                      setProfile(updated);
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : t("errors.updateProfile"));
+                    } finally {
+                      setIsLoading(false);
+                    }
+                  }}
+                >
+                  {t("common.save")}
+                </Button>
+              </div>
+            )}
+          </Card>
         </section>
       )}
 
@@ -723,9 +964,9 @@ export function App() {
         <div className="modal-backdrop">
           <div className="modal">
             <div className="inline">
-              <h3>Route preview</h3>
+              <h3>{t("courier.routePreview")}</h3>
               <button className="secondary" onClick={() => setMapPreviewOrder(null)}>
-                Close
+                {t("common.cancel")}
               </button>
             </div>
             <NavigationMap
@@ -733,14 +974,14 @@ export function App() {
               pickup={{
                 lat: mapPreviewOrder.vendor_geo.lat,
                 lng: mapPreviewOrder.vendor_geo.lng,
-                label: "Pickup",
+                label: t("courier.pickupPoint"),
               }}
               dropoff={
                 mapPreviewOrder.delivery_location
                   ? {
                       lat: mapPreviewOrder.delivery_location.lat,
                       lng: mapPreviewOrder.delivery_location.lng,
-                      label: "Dropoff",
+                      label: t("courier.dropoffPoint"),
                     }
                   : null
               }
@@ -748,6 +989,67 @@ export function App() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function CourierLogin({ onSuccess }: { onSuccess: (token: string) => void }) {
+  const { t } = useTranslation();
+  const [identifier, setIdentifier] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!identifier || !password) {
+      toast.error(t("errors.requiredFields"));
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      const isPhone = /^\+?\d+$/.test(identifier);
+      const result = await loginCourier({
+        login: isPhone ? undefined : identifier,
+        phone: isPhone ? identifier : undefined,
+        password,
+      });
+      toast.success(t("courier.loginSuccess"));
+      onSuccess(result.token);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("errors.authFailed"));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="login-shell">
+      <Card className="login-card">
+        <h2>{t("courier.loginTitle")}</h2>
+        <p className="muted">{t("courier.loginSubtitle")}</p>
+        <form onSubmit={submit} className="form-grid">
+          <label className="field">
+            <span>{t("courier.loginIdentifier")}</span>
+            <Input
+              value={identifier}
+              onChange={(event) => setIdentifier(event.target.value)}
+              placeholder={t("courier.loginIdentifierPlaceholder")}
+            />
+          </label>
+          <label className="field">
+            <span>{t("fields.password")}</span>
+            <Input
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder={t("courier.loginPasswordPlaceholder")}
+            />
+          </label>
+          <Button type="submit" disabled={isSubmitting}>
+            {isSubmitting ? t("courier.loggingIn") : t("courier.login")}
+          </Button>
+        </form>
+      </Card>
     </div>
   );
 }
@@ -763,6 +1065,7 @@ function AvailableOrderCard({
   onOpenMap: () => void;
   estimateDistance: (order: AvailableOrder) => Promise<string | null>;
 }) {
+  const { t } = useTranslation();
   const [distance, setDistance] = useState<string | null>(null);
 
   useEffect(() => {
@@ -781,17 +1084,17 @@ function AvailableOrderCard({
     <div className="card">
       <div className="card-title">{order.vendor_name}</div>
       <div className="card-meta">{order.vendor_address ?? "-"}</div>
-      {distance && <div className="card-meta">Distance: {distance}</div>}
-      <div className="card-meta">Order: {order.order_id}</div>
-      <div className="card-meta">Total: {order.total}</div>
-      <div className="card-meta">Courier fee: {order.courier_fee}</div>
+      {distance && <div className="card-meta">{t("courier.distance")}: {distance}</div>}
+      <div className="card-meta">{t("courier.order")}: {order.order_id}</div>
+      <div className="card-meta">{t("common.total")}: {formatCurrency(order.total)}</div>
+      <div className="card-meta">{t("courier.courierFee")}: {formatCurrency(order.courier_fee)}</div>
       <div className="inline">
         <button className="secondary" onClick={onOpenMap}>
-          Open map
+          {t("courier.openMap")}
         </button>
       </div>
       <button className="primary" onClick={onAccept}>
-        Accept
+        {t("courier.accept")}
       </button>
     </div>
   );
@@ -810,3 +1113,5 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number) {
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return radiusKm * c;
 }
+
+

@@ -9,8 +9,10 @@ Events do NOT change state directly; they are reactions to state changes.
 - vendor_accepted
 - order_ready
 - courier_accepted
+- handoff_confirmed
 - courier_picked_up
 - courier_delivered
+- order_completed
 - order_cancelled
 
 ## Event usage
@@ -25,9 +27,9 @@ Events may trigger:
 - Events may be emitted in-memory initially
 
 ## Example
-When order status changes from READY → COURIER_ACCEPTED:
+When order status changes from READY → HANDOFF_CONFIRMED:
 - State is updated first
-- Event `courier_accepted` is emitted
+- Event `handoff_confirmed` is emitted
 
 ## Rules
 - Events must never mutate core state

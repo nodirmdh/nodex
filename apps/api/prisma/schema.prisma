@@ -43,11 +43,13 @@ enum OrderStatus {
   ACCEPTED
   COOKING
   READY
+  HANDOFF_CONFIRMED
   READY_FOR_PICKUP
   PICKED_UP_BY_CUSTOMER
   COURIER_ACCEPTED
   PICKED_UP
   DELIVERED
+  COMPLETED
   CANCELLED
   CANCELLED_BY_VENDOR
 }
@@ -59,8 +61,20 @@ enum DeliveryMethod {
   CAR
 }
 
+enum Weekday {
+  MON
+  TUE
+  WED
+  THU
+  FRI
+  SAT
+  SUN
+}
+
 model Vendor {
   id             String         @id @default(uuid())
+  login          String?        @unique
+  passwordHash   String?
   name           String
   description    String?
   phone          String?
@@ -72,20 +86,43 @@ model Vendor {
   inn            String?
   category       VendorCategory
   supportsPickup Boolean        @default(false)
+  deliversSelf   Boolean        @default(false)
   addressText    String?
   isActive       Boolean        @default(true)
+  isBlocked      Boolean        @default(false)
+  blockedReason  String?
+  blockedAt      DateTime?
   openingHours   String?
   payoutDetails  Json?
+  mainImageUrl   String?
+  galleryImages  String[]       @default([])
   geoLat         Float
   geoLng         Float
+  timezone       String         @default("Asia/Tashkent")
   ratingAvg      Float          @default(0)
   ratingCount    Int            @default(0)
   menuItems      MenuItem[]
   promotions     Promotion[]
   orders         Order[]
   ratings        Rating[]
+  schedules      VendorSchedule[]
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
+}
+
+model VendorSchedule {
+  id        String   @id @default(uuid())
+  vendorId  String
+  vendor    Vendor   @relation(fields: [vendorId], references: [id])
+  weekday   Weekday
+  openTime  String?
+  closeTime String?
+  closed    Boolean  @default(false)
+  is24h     Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([vendorId, weekday])
 }
 
 model MenuItem {
@@ -178,6 +215,7 @@ model Order {
   vendor          Vendor          @relation(fields: [vendorId], references: [id])
   clientId        String?
   courierId       String?
+  courier         Courier?        @relation(fields: [courierId], references: [id])
   fulfillmentType FulfillmentType
   status          OrderStatus
   deliveryLat     Float?
@@ -210,8 +248,8 @@ model Order {
   giftCount       Int
   pickupCodeHash  String?
   pickupCodeSalt  String?
-  deliveryCodeHash String
-  deliveryCodeSalt String
+  deliveryCodeHash String?
+  deliveryCodeSalt String?
   createdAt       DateTime        @default(now())
   updatedAt       DateTime        @updatedAt
   items           OrderItem[]
@@ -224,9 +262,13 @@ model Order {
 model Client {
   id        String   @id
   fullName  String?
-  phone     String?
+  phone     String?  @unique
+  passwordHash String?
+  birthDate DateTime?
   telegramUsername String?
   about     String?
+  avatarFileId String?
+  avatarUrl String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   promoRedemptions PromoCodeRedemption[]
@@ -235,18 +277,26 @@ model Client {
 
 model Courier {
   id          String   @id
+  login       String?  @unique
+  passwordHash String?
   fullName    String?
   phone       String?
   telegramUsername String?
   photoUrl    String?
+  avatarFileId String?
+  avatarUrl   String?
   deliveryMethod DeliveryMethod?
   isAvailable Boolean  @default(true)
+  isBlocked   Boolean  @default(false)
+  blockedReason String?
+  blockedAt   DateTime?
   maxActiveOrders Int  @default(1)
   ratingAvg   Float    @default(0)
   ratingCount Int      @default(0)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   ratings     Rating[]
+  orders      Order[]
 }
 
 model OrderItem {

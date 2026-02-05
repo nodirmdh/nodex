@@ -13,8 +13,8 @@ Any transition outside this table is forbidden.
 ## Pickup flow (PICKUP orders only)
 | From | To | Actor |
 |-----|----|-------|
-| READY | READY_FOR_PICKUP | SYSTEM |
-| READY_FOR_PICKUP | PICKED_UP_BY_CUSTOMER | CLIENT |
+| READY | HANDOFF_CONFIRMED | VENDOR (pickup code required) |
+| HANDOFF_CONFIRMED | COMPLETED | SYSTEM |
 
 Conditions:
 - Vendor category must be RESTAURANTS
@@ -23,9 +23,16 @@ Conditions:
 ## Courier delivery states (DELIVERY orders only)
 | From | To | Actor |
 |-----|----|-------|
-| READY | COURIER_ACCEPTED | COURIER |
-| COURIER_ACCEPTED | PICKED_UP | COURIER (pickup code required) |
+| READY | HANDOFF_CONFIRMED | COURIER (handoff code required) |
+| HANDOFF_CONFIRMED | PICKED_UP | COURIER |
 | PICKED_UP | DELIVERED | COURIER (delivery code required) |
+| DELIVERED | COMPLETED | SYSTEM |
+
+## Self-delivery (DELIVERY orders, vendor deliversSelf)
+| From | To | Actor |
+|-----|----|-------|
+| READY | DELIVERED | VENDOR (delivery code required) |
+| DELIVERED | COMPLETED | SYSTEM |
 
 ## Cancellation
 | State | Who | Notes |

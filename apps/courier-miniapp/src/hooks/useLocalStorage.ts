@@ -14,6 +14,10 @@ export function useLocalStorage<T>(key: string, initialValue: T) {
   });
 
   useEffect(() => {
+    if (value === null) {
+      window.localStorage.removeItem(key);
+      return;
+    }
     window.localStorage.setItem(key, JSON.stringify(value));
   }, [key, value]);
 
