@@ -1,11 +1,11 @@
 {
   "vendor": {
-    "title": "Заголовок",
+    "title": "Вендор",
     "vendorId": "Вендор Id",
     "vendorIdPlaceholder": "Вендор Id Placeholder",
-    "loginTitle": "Войти Заголовок",
-    "ordersTitle": "Заказы Заголовок",
-    "ordersSubtitle": "Заказы Подзаголовок",
+    "loginTitle": "Войти Вендор",
+    "ordersTitle": "Заказы Вендор",
+    "ordersSubtitle": "Заказы Вендор",
     "active": "Активно",
     "history": "История",
     "revenue": "Выручка",
@@ -278,7 +278,7 @@
       "form": {
         "login": "Войти",
         "password": "Пароль",
-        "passwordRequired": "Пароль Required"
+        "passwordRequired": "Пароль забыл"
       },
       "updateFailed": "Обновить Failed",
       "loading": "Загрузка",
@@ -339,7 +339,7 @@
         "courierComment": "Курьер Comment"
       },
       "menu": {
-        "title": "Заголовок",
+        "title": "Админ",
         "description": "Описание",
         "price": "Цена",
         "available": "Доступно",
@@ -411,7 +411,7 @@
       "trackingTitle": "Tracking Заголовок",
       "trackingEmpty": "Tracking Пусто"
     },
-    "title": "Заголовок",
+    "title": "Админ",
     "vendorsSubtitle": "Вендоры Подзаголовок",
     "createVendor": "Создать Вендор",
     "settings": {

@@ -1,6 +1,6 @@
 {
   "vendor": {
-    "title": "Sarlavha",
+    "title": "Vendor",
     "vendorId": "Vendor Id",
     "vendorIdPlaceholder": "Vendor Id Placeholder",
     "loginTitle": "Kiriw Sarlavha",
@@ -411,7 +411,7 @@
       "trackingTitle": "Tracking Sarlavha",
       "trackingEmpty": "Tracking Bos"
     },
-    "title": "Sarlavha",
+    "title": "Admin",
     "vendorsSubtitle": "Vendorlar Túsindirme",
     "createVendor": "Jaratiw Vendor",
     "settings": {
