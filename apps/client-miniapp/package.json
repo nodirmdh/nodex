@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@nodex/domain": "file:../../packages/domain",
     "@nodex/i18n": "file:../../packages/i18n",
     "@nodex/navigation": "file:../../packages/navigation",
     "@nodex/ui": "file:../../packages/ui",

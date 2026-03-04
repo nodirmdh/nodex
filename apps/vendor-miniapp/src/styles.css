@@ -14,7 +14,7 @@ body {
 }
 
 .shell {
-  max-width: 820px;
+  max-width: 760px;
   margin: 0 auto;
   padding: 20px;
   display: grid;
@@ -30,13 +30,9 @@ body {
   gap: 8px;
 }
 
-.list {
-  display: grid;
-  gap: 8px;
-}
-
 input,
 textarea,
+select,
 button {
   background: #0f162b;
   color: #e6ebff;

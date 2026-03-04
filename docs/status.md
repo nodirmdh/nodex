@@ -1,6 +1,11 @@
 # Project Status
 
 ## Current status
+- **Done**: Added launch automation and checklist for Cloudflare-first MVP: `docs/LAUNCH.md`, root scripts (`typecheck:all`, `test:worker`, `dev:*`, `build:*`, `build:all`, `seed:d1`), setup scripts (`tools/setup-d1.ps1`, `tools/setup-d1.sh`), and API smoke script (`tools/smoke-test.ps1`).
+- **Done**: Added D1 seed tooling: `worker/scripts/seed.ts` (inserts 2 restaurants + 10 menu items via `wrangler d1 execute`) and `worker/scripts/seed.sql` alternative. Added worker npm script `seed` and updated README with migration/seed commands.
+- **Done**: Added Worker secret-based admin role assignment via `ADMIN_TG_IDS` (comma-separated Telegram IDs). `/auth/telegram` now resolves role from this secret (admin override) and persists role updates in `users` table.
+- **Done**: Telegram initData verification refactored into `worker/src/telegram/verifyInitData.ts` and `worker/src/telegram/types.ts`; `worker/src/index.ts` now uses the module and maps verification errors to 401. Added `worker/test/verifyInitData.test.ts` (valid, tampered field, wrong bot token, expired auth_date) with Vitest.
+- **Done**: Cloudflare MVP scaffold for Restaurants created. Added `worker/` (Hono + D1 + JWT + RBAC), secure Telegram `initData` signature verification by app-specific bot token, D1 migration `db/migrations/0001_init.sql`, shared domain types package `packages/domain`, and minimal dark-theme frontends for `client-miniapp`, `vendor-miniapp`, `admin-web` wired to Worker API.
 - **Done**: Monorepo setup with npm workspaces. Phase 0 tooling added (Node/TypeScript/Vitest). Phase 1 quote contract and pricing logic implemented in TypeScript with Vitest tests. `/client/cart/quote` wired to a minimal Fastify server with Prisma-backed repository and Postgres setup. Admin Web UI implemented (vendors, orders, promo codes, promotions) with API integration and JWT auth. Cleanup pass completed (removed Python artifacts and empty directories). Repo hygiene applied (.gitignore, integration test script, Prisma run steps documented). Phase 2 complete: orders + full promotions + codes + state transitions + domain events + client/vendor/courier endpoints (tracking, availability, location). Docs updated for `vendor_comment` and Profile support buttons.
 - **Done**: Enabled CORS for admin web to call API from `http://localhost:5173`.
 - **Done**: `/client/cart/quote` now applies promo codes when provided; quote route test updated to send `promo_code`.
@@ -122,6 +127,10 @@
 
 
 ## TODO / Next steps
+- Add a dedicated admin login/token mint endpoint for Cloudflare Worker flow (instead of manual role promotion + token reuse).
+- Add Worker endpoint tests (auth verification, RBAC guards, order creation totals) and CI for `worker`.
+- Add seed migration/scripts for demo restaurant, menu, and vendor/client users in D1.
+- Configure Cloudflare Pages projects and Worker routes/domains in production environments.
 - Add auth + Telegram `initData` verification and RBAC.
 - Implement PR-D (media uploads, client UI polish).
 - Audit remaining screens for UI kit consistency (vendor dashboard/menu/order details, client home/vendor/details, courier home/history).
