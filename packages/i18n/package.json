@@ -1,0 +1,11 @@
+{
+  "name": "@nodex/i18n",
+  "version": "0.1.0",
+  "private": true,
+  "main": "src/index.ts",
+  "type": "module",
+  "dependencies": {
+    "i18next": "^23.10.1",
+    "react-i18next": "^14.1.3"
+  }
+}
