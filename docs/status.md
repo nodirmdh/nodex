@@ -1,6 +1,7 @@
 # Project Status
 
 ## Current status
+- **Done**: Restored admin web visual shell (left sidebar + sectioned pages/tabs + tables + map block) on top of Cloudflare Worker API. Replaced scaffold forms with operational pages for restaurants list/edit, orders list/detail, menu CRUD by restaurant, plus finance/promos/reviews sections and improved JWT login screen with localStorage persistence.
 - **Done**: Added launch automation and checklist for Cloudflare-first MVP: `docs/LAUNCH.md`, root scripts (`typecheck:all`, `test:worker`, `dev:*`, `build:*`, `build:all`, `seed:d1`), setup scripts (`tools/setup-d1.ps1`, `tools/setup-d1.sh`), and API smoke script (`tools/smoke-test.ps1`).
 - **Done**: Added D1 seed tooling: `worker/scripts/seed.ts` (inserts 2 restaurants + 10 menu items via `wrangler d1 execute`) and `worker/scripts/seed.sql` alternative. Added worker npm script `seed` and updated README with migration/seed commands.
 - **Done**: Added Worker secret-based admin role assignment via `ADMIN_TG_IDS` (comma-separated Telegram IDs). `/auth/telegram` now resolves role from this secret (admin override) and persists role updates in `users` table.

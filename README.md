@@ -221,6 +221,17 @@ Example value:
 123456789,987654321
 ```
 
+## Admin usage
+1. Открой admin-web URL (локально `http://localhost:5173` или Pages URL).
+2. Вставь admin JWT на login-экране и нажми `Continue`.
+3. Разделы слева:
+   - `Overview`: KPI + последние заказы + map section
+   - `Restaurants`: список ресторанов + create/update
+   - `Orders`: список заказов
+   - `Menu`: CRUD меню по выбранному ресторану
+   - `Promos`, `Finance`, `Reviews`: рабочие admin-вью; промо/reviews в Worker v1 пока как placeholder-блоки
+4. JWT сохраняется в `localStorage` (`nodex_admin_jwt`) и используется в admin API вызовах.
+
 ## Telegram auth verification
 Worker validates Telegram `initData` signature using the app-specific bot token:
 - `app="client"` -> `CLIENT_BOT_TOKEN`
