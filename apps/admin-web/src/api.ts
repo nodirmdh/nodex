@@ -57,6 +57,19 @@ export async function updateRestaurant(id: string, payload: Partial<CreateRestau
   });
 }
 
+export type RestaurantDto = {
+  id: string;
+  name: string;
+  isOpen: boolean;
+  deliveryFee: number;
+  minOrder: number;
+  etaText: string | null;
+};
+
+export async function listRestaurants() {
+  return request<{ restaurants: RestaurantDto[] }>("/restaurants");
+}
+
 export async function createMenuItem(payload: CreateMenuItemRequest) {
   return request<{ id: string }>("/admin/menu-items", {
     method: "POST",
@@ -71,6 +84,35 @@ export async function updateMenuItem(id: string, payload: Partial<CreateMenuItem
   });
 }
 
-export async function listAdminOrders() {
-  return request<{ orders: Array<Record<string, unknown>> }>("/admin/orders");
+export type MenuItemDto = {
+  id: string;
+  restaurantId: string;
+  title: string;
+  price: number;
+  isAvailable: boolean;
+  category: string | null;
+};
+
+export async function listMenuItems(restaurantId: string) {
+  return request<{ items: MenuItemDto[] }>(`/restaurants/${restaurantId}/menu`);
 }
+
+export async function listAdminOrders() {
+  return request<{ orders: OrderDto[] }>("/admin/orders");
+}
+
+export type OrderDto = {
+  id: string;
+  client_user_id: string;
+  restaurant_id: string;
+  restaurant_name: string;
+  status: string;
+  address: string;
+  phone: string;
+  comment: string | null;
+  subtotal: number;
+  delivery_fee: number;
+  discount: number;
+  total: number;
+  created_at: string;
+};

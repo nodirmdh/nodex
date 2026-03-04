@@ -3,40 +3,67 @@ import { listActiveOrders, telegramAuth, updateOrderStatus } from "./api";
 
 type TelegramWebApp = {
   initData?: string;
+  initDataUnsafe?: { user?: { id?: number | string } };
   ready?: () => void;
 };
 
-function readTelegramInitData() {
+function readTelegramWebApp() {
   const tg = (window as { Telegram?: { WebApp?: TelegramWebApp } }).Telegram?.WebApp;
   tg?.ready?.();
-  return tg?.initData ?? "";
+  return tg ?? null;
 }
 
 export function App() {
-  const [initData, setInitData] = useState("");
-  const [authed, setAuthed] = useState(false);
+  const DEV_MODE =
+    import.meta.env.DEV ||
+    import.meta.env.VITE_DEV_MODE === "1" ||
+    import.meta.env.VITE_DEV_MODE === "true";
+  const [authState, setAuthState] = useState<"loading" | "ready" | "blocked">("loading");
+  const [manualInitData, setManualInitData] = useState("");
+  const [tgUserId, setTgUserId] = useState<string | null>(null);
   const [ordersJson, setOrdersJson] = useState("[]");
   const [statusOrderId, setStatusOrderId] = useState("");
   const [statusValue, setStatusValue] = useState("PREPARING");
   const [message, setMessage] = useState<string | null>(null);
 
-  useEffect(() => {
-    setInitData(readTelegramInitData());
-  }, []);
-
-  const login = async () => {
+  const login = async (initData: string) => {
+    setAuthState("loading");
     setMessage(null);
     try {
       if (!initData.trim()) {
         throw new Error("Telegram initData is required");
       }
-      await telegramAuth(initData.trim());
-      setAuthed(true);
+      await telegramAuth(initData);
       await refreshOrders();
+      setAuthState("ready");
     } catch (err) {
+      setAuthState("blocked");
       setMessage(err instanceof Error ? err.message : "Auth failed");
     }
   };
+
+  useEffect(() => {
+    const tg = readTelegramWebApp();
+    if (!tg) {
+      setAuthState("blocked");
+      setMessage("Open this app via Telegram bot menu button.");
+      return;
+    }
+
+    const initData = tg.initData?.trim() ?? "";
+    const unsafeUserId = tg.initDataUnsafe?.user?.id;
+    if (unsafeUserId !== undefined && unsafeUserId !== null) {
+      setTgUserId(String(unsafeUserId));
+    }
+
+    if (!initData) {
+      setAuthState("blocked");
+      setMessage("Open this app via Telegram bot menu button.");
+      return;
+    }
+
+    void login(initData);
+  }, []);
 
   const refreshOrders = async () => {
     setMessage(null);
@@ -62,19 +89,39 @@ export function App() {
     }
   };
 
-  if (!authed) {
+  if (authState === "loading") {
     return (
       <main className="shell">
-        <h1>Nodex Vendor Mini App</h1>
-        <p>Authenticate with Telegram WebApp initData</p>
-        <textarea
-          value={initData}
-          onChange={(event) => setInitData(event.target.value)}
-          rows={6}
-          placeholder="initData"
-        />
-        <button onClick={() => void login()}>Login via Telegram</button>
-        {message && <p className="error">{message}</p>}
+        <section className="panel">
+          <h1>Nodex Vendor Mini App</h1>
+          <p>Authenticating via Telegram...</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (authState === "blocked") {
+    return (
+      <main className="shell">
+        <section className="panel">
+          <h1>Nodex Vendor Mini App</h1>
+          <p>Open this app via Telegram bot menu button.</p>
+          {tgUserId && <p>Detected Telegram user: {tgUserId}</p>}
+          {message && <p className="error">{message}</p>}
+        </section>
+        {DEV_MODE && (
+          <section className="panel">
+            <h2>DEV fallback</h2>
+            <p>Use manual initData only for local development.</p>
+            <textarea
+              value={manualInitData}
+              onChange={(event) => setManualInitData(event.target.value)}
+              rows={6}
+              placeholder="Paste initData"
+            />
+            <button onClick={() => void login(manualInitData.trim())}>Auth with initData</button>
+          </section>
+        )}
       </main>
     );
   }

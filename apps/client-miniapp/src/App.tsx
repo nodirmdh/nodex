@@ -6,18 +6,24 @@ type Cart = Record<string, number>;
 
 type TelegramWebApp = {
   initData?: string;
+  initDataUnsafe?: { user?: { id?: number | string } };
   ready?: () => void;
 };
 
-function readTelegramInitData() {
+function readTelegramWebApp() {
   const tg = (window as { Telegram?: { WebApp?: TelegramWebApp } }).Telegram?.WebApp;
   tg?.ready?.();
-  return tg?.initData ?? "";
+  return tg ?? null;
 }
 
 export function App() {
-  const [initData, setInitData] = useState("");
-  const [authed, setAuthed] = useState(false);
+  const DEV_MODE =
+    import.meta.env.DEV ||
+    import.meta.env.VITE_DEV_MODE === "1" ||
+    import.meta.env.VITE_DEV_MODE === "true";
+  const [authState, setAuthState] = useState<"loading" | "ready" | "blocked">("loading");
+  const [manualInitData, setManualInitData] = useState("");
+  const [tgUserId, setTgUserId] = useState<string | null>(null);
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(null);
   const [menu, setMenu] = useState<MenuItem[]>([]);
@@ -28,10 +34,6 @@ export function App() {
   const [comment, setComment] = useState("");
   const [ordersJson, setOrdersJson] = useState("[]");
   const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    setInitData(readTelegramInitData());
-  }, []);
 
   const loadRestaurants = async () => {
     const data = await listRestaurants();
@@ -70,19 +72,44 @@ export function App() {
     setCart((prev) => ({ ...prev, [itemId]: (prev[itemId] ?? 0) + 1 }));
   };
 
-  const authAndLoad = async () => {
+  const authAndLoad = async (initData: string) => {
+    setAuthState("loading");
     setError(null);
     try {
       if (!initData.trim()) {
         throw new Error("Telegram initData is required");
       }
-      await telegramAuth(initData.trim());
-      setAuthed(true);
+      await telegramAuth(initData);
       await loadRestaurants();
+      setAuthState("ready");
     } catch (err) {
+      setAuthState("blocked");
       setError(err instanceof Error ? err.message : "Auth failed");
     }
   };
+
+  useEffect(() => {
+    const tg = readTelegramWebApp();
+    if (!tg) {
+      setAuthState("blocked");
+      setError("Open this app via Telegram bot menu button.");
+      return;
+    }
+
+    const initData = tg.initData?.trim() ?? "";
+    const unsafeUserId = tg.initDataUnsafe?.user?.id;
+    if (unsafeUserId !== undefined && unsafeUserId !== null) {
+      setTgUserId(String(unsafeUserId));
+    }
+
+    if (!initData) {
+      setAuthState("blocked");
+      setError("Open this app via Telegram bot menu button.");
+      return;
+    }
+
+    void authAndLoad(initData);
+  }, []);
 
   const submitOrder = async () => {
     setError(null);
@@ -121,19 +148,39 @@ export function App() {
     }
   };
 
-  if (!authed) {
+  if (authState === "loading") {
     return (
       <main className="shell">
-        <h1>Nodex Client Mini App</h1>
-        <p>Authenticate with Telegram WebApp initData</p>
-        <textarea
-          value={initData}
-          onChange={(event) => setInitData(event.target.value)}
-          rows={6}
-          placeholder="initData"
-        />
-        <button onClick={() => void authAndLoad()}>Login via Telegram</button>
-        {error && <p className="error">{error}</p>}
+        <section className="panel">
+          <h1>Nodex Client Mini App</h1>
+          <p>Authenticating via Telegram...</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (authState === "blocked") {
+    return (
+      <main className="shell">
+        <section className="panel">
+          <h1>Nodex Client Mini App</h1>
+          <p>Open this app via Telegram bot menu button.</p>
+          {tgUserId && <p>Detected Telegram user: {tgUserId}</p>}
+          {error && <p className="error">{error}</p>}
+        </section>
+        {DEV_MODE && (
+          <section className="panel">
+            <h2>DEV fallback</h2>
+            <p>Use manual initData only for local development.</p>
+            <textarea
+              value={manualInitData}
+              onChange={(event) => setManualInitData(event.target.value)}
+              rows={6}
+              placeholder="Paste initData"
+            />
+            <button onClick={() => void authAndLoad(manualInitData.trim())}>Auth with initData</button>
+          </section>
+        )}
       </main>
     );
   }
