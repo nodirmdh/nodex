@@ -12,7 +12,6 @@
     "dev:worker": "npm --prefix worker run dev",
     "dev:admin": "npm -w apps/admin-web run dev",
     "dev:client": "npm -w apps/client-miniapp run dev",
-    "dev:courier": "npm -w apps/courier-miniapp run dev",
     "dev:vendor": "npm -w apps/vendor-miniapp run dev",
     "dev:vendor-web": "npm -w apps/vendor-web run dev",
     "dev:vendor-miniapp": "npm -w apps/vendor-miniapp run dev",

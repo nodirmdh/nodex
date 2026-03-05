@@ -156,3 +156,21 @@
 ## Agent instructions
 - Allowed to work only inside the active phase scope.
 - Must stop after completing all deliverables of the active phase.
+
+## 2026-03-05 Cloudflare Restaurants MVP (no courier)
+- Done: Worker expanded with compatibility endpoints for restored UI modules: `/vendor/dashboard`, `/vendor/promotions`, `/vendor/reviews`, `/admin/menu-items`, `/admin/promotions`, `/admin/finance`, `/admin/reviews`.
+- Done: Vendor mini app restored to old-style tab structure (Overview/Orders/Menu/Promos/Finance/Reviews) with Telegram auto-auth and Worker API adapter.
+- Done: Admin login now supports `/auth/admin` (username/password from Worker secrets) in addition to JWT paste mode.
+- Done: Client/Vendor API adapter files standardized under `apps/*/src/api/*` for Worker mapping.
+- Done: Launch docs updated to state no-courier MVP and simplified order statuses.
+
+### Assumptions (current phase)
+- MVP scope is Restaurants-only with vendor-direct delivery; courier roles/screens/flows are deprecated and out of launch path.
+- Promos/Reviews/Finance endpoints are placeholders where business logic is not yet migrated; UI must stay navigable and not crash.
+- `requirements.md`/`domains.md` still contain legacy courier requirements and need full docs cleanup in a dedicated docs pass.
+
+### TODO (follow-ups)
+- Remove legacy courier docs/pages/types completely from `docs/*`, `apps/admin-web/src/pages/*`, and old adapters.
+- Align `docs/requirements.md`, `docs/domains.md`, `docs/architecture.md` to Cloudflare Restaurants MVP without courier.
+- Finish 1:1 visual parity for old client/admin/vendor components where current adapters still use simplified data.
+- Add endpoint tests for new compatibility routes and status transitions (`NEW -> ACCEPTED -> COOKING -> ONWAY -> DELIVERED/CANCELLED`).

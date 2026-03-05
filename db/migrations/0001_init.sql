@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS restaurants (
   vendor_user_id TEXT NOT NULL,
   name TEXT NOT NULL,
   is_open INTEGER NOT NULL DEFAULT 1,
+  vendor_delivery INTEGER NOT NULL DEFAULT 1,
   delivery_fee INTEGER NOT NULL DEFAULT 0,
   min_order INTEGER NOT NULL DEFAULT 0,
   eta_text TEXT,

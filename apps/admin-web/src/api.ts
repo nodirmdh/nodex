@@ -18,6 +18,21 @@ export function setAdminToken(token: string | null) {
   }
 }
 
+export async function loginAdmin(username: string, password: string) {
+  const response = await fetch(`${API_URL}/auth/admin`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error((body as { error?: string }).error ?? "Admin login failed");
+  }
+  const data = (await response.json()) as { token: string };
+  setAdminToken(data.token);
+  return data;
+}
+
 function headers() {
   const token = getAdminToken();
   return {
