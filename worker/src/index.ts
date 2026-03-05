@@ -14,6 +14,8 @@ type EnvBindings = {
   CLIENT_BOT_TOKEN: string;
   VENDOR_BOT_TOKEN: string;
   ADMIN_TG_IDS?: string;
+  ADMIN_USERNAME?: string;
+  ADMIN_PASSWORD?: string;
   JWT_TTL_SECONDS?: string;
   TELEGRAM_MAX_AUTH_AGE_SECONDS?: string;
 };
@@ -41,6 +43,11 @@ type StatusUpdateBody = {
   status?: string;
 };
 
+type AdminAuthBody = {
+  username?: string;
+  password?: string;
+};
+
 const app = new Hono<{ Bindings: EnvBindings }>();
 
 app.use("*", cors({
@@ -59,6 +66,26 @@ app.get("/", (c) =>
 );
 
 app.get("/health", (c) => c.json({ ok: true }));
+
+app.post("/auth/admin", async (c) => {
+  const body = (await c.req.json().catch(() => null)) as AdminAuthBody | null;
+  if (!body?.username || !body.password) {
+    throw new HTTPException(400, { message: "username and password are required" });
+  }
+  if (!c.env.ADMIN_USERNAME || !c.env.ADMIN_PASSWORD) {
+    throw new HTTPException(500, { message: "admin auth is not configured" });
+  }
+  if (body.username !== c.env.ADMIN_USERNAME || body.password !== c.env.ADMIN_PASSWORD) {
+    throw new HTTPException(401, { message: "invalid credentials" });
+  }
+
+  const token = await signSessionJwt(
+    c.env.JWT_SECRET,
+    { sub: "admin", role: "admin", tgId: "admin" },
+    Number(c.env.JWT_TTL_SECONDS ?? "604800"),
+  );
+  return c.json({ token, role: "admin" });
+});
 
 app.post("/auth/telegram", async (c) => {
   const body = (await c.req.json().catch(() => null)) as TelegramAuthBody | null;
@@ -130,24 +157,28 @@ app.post("/auth/telegram", async (c) => {
 
 app.get("/restaurants", async (c) => {
   const rows = await c.env.DB.prepare(
-    "SELECT id, name, is_open, delivery_fee, min_order, eta_text FROM restaurants ORDER BY name ASC",
+    "SELECT id, vendor_user_id, name, is_open, delivery_fee, min_order, eta_text, vendor_delivery FROM restaurants ORDER BY name ASC",
   ).all<{
     id: string;
+    vendor_user_id: string;
     name: string;
     is_open: number;
     delivery_fee: number;
     min_order: number;
     eta_text: string | null;
+    vendor_delivery: number;
   }>();
 
   return c.json({
     restaurants: (rows.results ?? []).map((r) => ({
       id: r.id,
+      vendorUserId: r.vendor_user_id,
       name: r.name,
       isOpen: Boolean(r.is_open),
       deliveryFee: r.delivery_fee,
       minOrder: r.min_order,
       etaText: r.eta_text,
+      vendorDelivery: Boolean(r.vendor_delivery),
     })),
   });
 });
@@ -306,12 +337,17 @@ app.post("/orders", async (c) => {
 app.get("/orders/me", async (c) => {
   const session = await requireAuth(c, ["client"]);
   const rows = await c.env.DB.prepare(
-    "SELECT id, restaurant_id, status, address, phone, comment, subtotal, delivery_fee, discount, total, created_at FROM orders WHERE client_user_id = ?1 ORDER BY created_at DESC",
+    `SELECT o.id, o.restaurant_id, r.name AS restaurant_name, o.status, o.address, o.phone, o.comment, o.subtotal, o.delivery_fee, o.discount, o.total, o.created_at
+     FROM orders o
+     INNER JOIN restaurants r ON r.id = o.restaurant_id
+     WHERE o.client_user_id = ?1
+     ORDER BY o.created_at DESC`,
   )
     .bind(session.sub)
     .all<{
       id: string;
       restaurant_id: string;
+      restaurant_name: string;
       status: string;
       address: string;
       phone: string;
@@ -328,13 +364,142 @@ app.get("/orders/me", async (c) => {
   });
 });
 
+app.get("/orders/me/:id", async (c) => {
+  const session = await requireAuth(c, ["client"]);
+  const id = c.req.param("id");
+  const order = await c.env.DB.prepare(
+    `SELECT o.id, o.restaurant_id, r.name AS restaurant_name, o.status, o.address, o.phone, o.comment, o.subtotal, o.delivery_fee, o.discount, o.total, o.created_at
+     FROM orders o
+     INNER JOIN restaurants r ON r.id = o.restaurant_id
+     WHERE o.id = ?1 AND o.client_user_id = ?2
+     LIMIT 1`,
+  )
+    .bind(id, session.sub)
+    .first();
+  if (!order) {
+    throw new HTTPException(404, { message: "order not found" });
+  }
+  return c.json({ order });
+});
+
+app.get("/vendor/restaurant", async (c) => {
+  const session = await requireAuth(c, ["vendor"]);
+  const restaurant = await c.env.DB.prepare(
+    "SELECT id, vendor_user_id, name, is_open, delivery_fee, min_order, eta_text, vendor_delivery FROM restaurants WHERE vendor_user_id = ?1 LIMIT 1",
+  )
+    .bind(session.sub)
+    .first();
+  if (!restaurant) {
+    throw new HTTPException(404, { message: "restaurant not found for vendor" });
+  }
+  return c.json({ restaurant });
+});
+
+app.get("/vendor/menu", async (c) => {
+  const session = await requireAuth(c, ["vendor"]);
+  const rows = await c.env.DB.prepare(
+    `SELECT m.id, m.restaurant_id, m.title, m.price, m.is_available, m.category
+     FROM menu_items m
+     INNER JOIN restaurants r ON r.id = m.restaurant_id
+     WHERE r.vendor_user_id = ?1
+     ORDER BY m.id DESC`,
+  )
+    .bind(session.sub)
+    .all();
+  return c.json({ items: rows.results ?? [] });
+});
+
+app.post("/vendor/menu", async (c) => {
+  const session = await requireAuth(c, ["vendor"]);
+  const body = (await c.req.json().catch(() => null)) as Partial<{
+    title: string;
+    price: number;
+    isAvailable: boolean;
+    category: string | null;
+  }> | null;
+  if (!body?.title || body.price === undefined) {
+    throw new HTTPException(400, { message: "title and price are required" });
+  }
+  const restaurant = await c.env.DB.prepare(
+    "SELECT id FROM restaurants WHERE vendor_user_id = ?1 LIMIT 1",
+  )
+    .bind(session.sub)
+    .first<{ id: string }>();
+  if (!restaurant) {
+    throw new HTTPException(404, { message: "restaurant not found for vendor" });
+  }
+  const id = crypto.randomUUID();
+  await c.env.DB.prepare(
+    "INSERT INTO menu_items (id, restaurant_id, title, price, is_available, category) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+  )
+    .bind(
+      id,
+      restaurant.id,
+      body.title,
+      Number(body.price),
+      body.isAvailable === false ? 0 : 1,
+      body.category ?? null,
+    )
+    .run();
+  return c.json({ id });
+});
+
+app.put("/vendor/menu/:id", async (c) => {
+  const session = await requireAuth(c, ["vendor"]);
+  const id = c.req.param("id");
+  const body = (await c.req.json().catch(() => null)) as Partial<{
+    title: string;
+    price: number;
+    isAvailable: boolean;
+    category: string | null;
+  }> | null;
+  const owned = await c.env.DB.prepare(
+    `SELECT m.id
+     FROM menu_items m
+     INNER JOIN restaurants r ON r.id = m.restaurant_id
+     WHERE m.id = ?1 AND r.vendor_user_id = ?2
+     LIMIT 1`,
+  )
+    .bind(id, session.sub)
+    .first();
+  if (!owned) {
+    throw new HTTPException(404, { message: "menu item not found" });
+  }
+  await c.env.DB.prepare(
+    "UPDATE menu_items SET title = COALESCE(?1, title), price = COALESCE(?2, price), is_available = COALESCE(?3, is_available), category = ?4 WHERE id = ?5",
+  )
+    .bind(
+      body?.title ?? null,
+      body?.price ?? null,
+      body?.isAvailable === undefined ? null : body.isAvailable ? 1 : 0,
+      body?.category ?? null,
+      id,
+    )
+    .run();
+  return c.json({ id });
+});
+
+app.get("/vendor/orders", async (c) => {
+  const session = await requireAuth(c, ["vendor"]);
+  const rows = await c.env.DB.prepare(
+    `SELECT o.id, o.restaurant_id, r.name AS restaurant_name, o.status, o.address, o.phone, o.comment, o.subtotal, o.delivery_fee, o.discount, o.total, o.created_at
+     FROM orders o
+     INNER JOIN restaurants r ON r.id = o.restaurant_id
+     WHERE r.vendor_user_id = ?1
+     ORDER BY o.created_at DESC`,
+  )
+    .bind(session.sub)
+    .all();
+  return c.json({ orders: rows.results ?? [] });
+});
+
 app.get("/vendor/orders/active", async (c) => {
   const session = await requireAuth(c, ["vendor"]);
   const rows = await c.env.DB.prepare(
     `SELECT o.id, o.restaurant_id, r.name AS restaurant_name, o.status, o.address, o.phone, o.comment, o.subtotal, o.delivery_fee, o.discount, o.total, o.created_at
      FROM orders o
      INNER JOIN restaurants r ON r.id = o.restaurant_id
-     WHERE r.vendor_user_id = ?1 AND o.status IN ('NEW', 'ACCEPTED', 'PREPARING', 'READY')
+     WHERE r.vendor_user_id = ?1 AND o.status IN ('NEW', 'ACCEPTED', 'COOKING', 'ONWAY')
      ORDER BY o.created_at DESC`,
   )
     .bind(session.sub)
@@ -343,12 +508,72 @@ app.get("/vendor/orders/active", async (c) => {
   return c.json({ orders: rows.results ?? [] });
 });
 
+app.get("/vendor/orders/:id", async (c) => {
+  const session = await requireAuth(c, ["vendor"]);
+  const id = c.req.param("id");
+  const order = await c.env.DB.prepare(
+    `SELECT o.id, o.restaurant_id, r.name AS restaurant_name, o.status, o.address, o.phone, o.comment, o.subtotal, o.delivery_fee, o.discount, o.total, o.created_at
+     FROM orders o
+     INNER JOIN restaurants r ON r.id = o.restaurant_id
+     WHERE o.id = ?1 AND r.vendor_user_id = ?2
+     LIMIT 1`,
+  )
+    .bind(id, session.sub)
+    .first();
+  if (!order) {
+    throw new HTTPException(404, { message: "order not found" });
+  }
+  return c.json({ order });
+});
+
+app.get("/vendor/dashboard", async (c) => {
+  const session = await requireAuth(c, ["vendor"]);
+  const stats = await c.env.DB.prepare(
+    `SELECT COUNT(o.id) AS orders_count,
+            COALESCE(SUM(o.total), 0) AS revenue,
+            COALESCE(AVG(o.total), 0) AS average_check
+     FROM orders o
+     INNER JOIN restaurants r ON r.id = o.restaurant_id
+     WHERE r.vendor_user_id = ?1`,
+  )
+    .bind(session.sub)
+    .first<{ orders_count: number; revenue: number; average_check: number }>();
+
+  return c.json({
+    revenue: Number(stats?.revenue ?? 0),
+    completed_count: Number(stats?.orders_count ?? 0),
+    average_check: Number(stats?.average_check ?? 0),
+    service_fee_total: 0,
+    vendor_owes: 0,
+    rating_avg: 0,
+    rating_count: 0,
+    daily: [],
+    range_days: 7,
+  });
+});
+
+app.get("/vendor/promotions", async (c) => {
+  await requireAuth(c, ["vendor"]);
+  return c.json({
+    promotions: [],
+    message: "Coming soon",
+  });
+});
+
+app.get("/vendor/reviews", async (c) => {
+  await requireAuth(c, ["vendor"]);
+  return c.json({
+    reviews: [],
+    message: "Coming soon",
+  });
+});
+
 app.post("/vendor/orders/:id/status", async (c) => {
   const session = await requireAuth(c, ["vendor"]);
   const orderId = c.req.param("id");
   const body = (await c.req.json().catch(() => null)) as StatusUpdateBody | null;
   const status = (body?.status ?? "").trim().toUpperCase();
-  const allowed = new Set(["ACCEPTED", "PREPARING", "READY", "COMPLETED", "CANCELLED"]);
+  const allowed = new Set(["ACCEPTED", "COOKING", "ONWAY", "DELIVERED", "CANCELLED"]);
 
   if (!allowed.has(status)) {
     throw new HTTPException(400, { message: "invalid status" });
@@ -382,6 +607,7 @@ app.post("/admin/restaurants", async (c) => {
     deliveryFee: number;
     minOrder: number;
     etaText: string | null;
+    vendorDelivery: boolean;
   }> | null;
 
   if (!body?.vendorUserId || !body.name) {
@@ -390,7 +616,7 @@ app.post("/admin/restaurants", async (c) => {
 
   const id = crypto.randomUUID();
   await c.env.DB.prepare(
-    "INSERT INTO restaurants (id, vendor_user_id, name, is_open, delivery_fee, min_order, eta_text) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+    "INSERT INTO restaurants (id, vendor_user_id, name, is_open, delivery_fee, min_order, eta_text, vendor_delivery) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
   )
     .bind(
       id,
@@ -400,6 +626,7 @@ app.post("/admin/restaurants", async (c) => {
       Number(body.deliveryFee ?? 0),
       Number(body.minOrder ?? 0),
       body.etaText ?? null,
+      body.vendorDelivery === false ? 0 : 1,
     )
     .run();
 
@@ -416,10 +643,11 @@ app.put("/admin/restaurants/:id", async (c) => {
     deliveryFee: number;
     minOrder: number;
     etaText: string | null;
+    vendorDelivery: boolean;
   }> | null;
 
   await c.env.DB.prepare(
-    "UPDATE restaurants SET vendor_user_id = COALESCE(?1, vendor_user_id), name = COALESCE(?2, name), is_open = COALESCE(?3, is_open), delivery_fee = COALESCE(?4, delivery_fee), min_order = COALESCE(?5, min_order), eta_text = ?6 WHERE id = ?7",
+    "UPDATE restaurants SET vendor_user_id = COALESCE(?1, vendor_user_id), name = COALESCE(?2, name), is_open = COALESCE(?3, is_open), delivery_fee = COALESCE(?4, delivery_fee), min_order = COALESCE(?5, min_order), eta_text = ?6, vendor_delivery = COALESCE(?7, vendor_delivery) WHERE id = ?8",
   )
     .bind(
       body?.vendorUserId ?? null,
@@ -428,6 +656,7 @@ app.put("/admin/restaurants/:id", async (c) => {
       body?.deliveryFee ?? null,
       body?.minOrder ?? null,
       body?.etaText ?? null,
+      body?.vendorDelivery === undefined ? null : body.vendorDelivery ? 1 : 0,
       id,
     )
     .run();
@@ -496,6 +725,128 @@ app.get("/admin/orders", async (c) => {
   ).all();
 
   return c.json({ orders: rows.results ?? [] });
+});
+
+app.get("/admin/menu-items", async (c) => {
+  await requireAuth(c, ["admin"]);
+  const restaurantId = c.req.query("restaurantId");
+  const baseQuery = restaurantId
+    ? `SELECT m.id, m.restaurant_id, m.title, m.price, m.is_available, m.category
+       FROM menu_items m
+       WHERE m.restaurant_id = ?1
+       ORDER BY m.id DESC`
+    : `SELECT m.id, m.restaurant_id, m.title, m.price, m.is_available, m.category
+       FROM menu_items m
+       ORDER BY m.id DESC`;
+  const rows = restaurantId
+    ? await c.env.DB.prepare(baseQuery).bind(restaurantId).all()
+    : await c.env.DB.prepare(baseQuery).all();
+
+  return c.json({
+    items: (rows.results ?? []).map((m) => ({
+      id: (m as Record<string, unknown>).id,
+      restaurantId: (m as Record<string, unknown>).restaurant_id,
+      title: (m as Record<string, unknown>).title,
+      price: (m as Record<string, unknown>).price,
+      isAvailable: Boolean((m as Record<string, unknown>).is_available),
+      category: (m as Record<string, unknown>).category,
+    })),
+  });
+});
+
+app.get("/admin/orders/:id", async (c) => {
+  await requireAuth(c, ["admin"]);
+  const id = c.req.param("id");
+  const order = await c.env.DB.prepare(
+    `SELECT o.id, o.client_user_id, o.restaurant_id, r.name AS restaurant_name, o.status, o.address, o.phone, o.comment, o.subtotal, o.delivery_fee, o.discount, o.total, o.created_at
+     FROM orders o
+     INNER JOIN restaurants r ON r.id = o.restaurant_id
+     WHERE o.id = ?1
+     LIMIT 1`,
+  )
+    .bind(id)
+    .first();
+  if (!order) {
+    throw new HTTPException(404, { message: "order not found" });
+  }
+  return c.json({ order });
+});
+
+app.get("/admin/restaurants", async (c) => {
+  await requireAuth(c, ["admin"]);
+  const rows = await c.env.DB.prepare(
+    "SELECT id, vendor_user_id, name, is_open, delivery_fee, min_order, eta_text, vendor_delivery FROM restaurants ORDER BY name ASC",
+  ).all();
+  return c.json({
+    restaurants: (rows.results ?? []).map((r) => ({
+      id: (r as Record<string, unknown>).id,
+      vendorUserId: (r as Record<string, unknown>).vendor_user_id,
+      name: (r as Record<string, unknown>).name,
+      isOpen: Boolean((r as Record<string, unknown>).is_open),
+      deliveryFee: (r as Record<string, unknown>).delivery_fee,
+      minOrder: (r as Record<string, unknown>).min_order,
+      etaText: (r as Record<string, unknown>).eta_text,
+      vendorDelivery: Boolean((r as Record<string, unknown>).vendor_delivery),
+    })),
+  });
+});
+
+app.get("/admin/restaurants/:id", async (c) => {
+  await requireAuth(c, ["admin"]);
+  const id = c.req.param("id");
+  const restaurant = await c.env.DB.prepare(
+    "SELECT id, vendor_user_id, name, is_open, delivery_fee, min_order, eta_text, vendor_delivery FROM restaurants WHERE id = ?1 LIMIT 1",
+  )
+    .bind(id)
+    .first();
+  if (!restaurant) {
+    throw new HTTPException(404, { message: "restaurant not found" });
+  }
+  return c.json({ restaurant });
+});
+
+app.get("/admin/clients", async (c) => {
+  await requireAuth(c, ["admin"]);
+  const rows = await c.env.DB.prepare(
+    `SELECT u.id, u.tg_id, u.name, u.phone, u.created_at, COUNT(o.id) AS orders_count, COALESCE(SUM(o.total), 0) AS total_spent
+     FROM users u
+     LEFT JOIN orders o ON o.client_user_id = u.id
+     WHERE u.role = 'client'
+     GROUP BY u.id, u.tg_id, u.name, u.phone, u.created_at
+     ORDER BY u.created_at DESC`,
+  ).all();
+  return c.json({ clients: rows.results ?? [] });
+});
+
+app.get("/admin/promotions", async (c) => {
+  await requireAuth(c, ["admin"]);
+  return c.json({
+    promotions: [],
+    message: "Coming soon",
+  });
+});
+
+app.get("/admin/finance", async (c) => {
+  await requireAuth(c, ["admin"]);
+  const stats = await c.env.DB.prepare(
+    `SELECT COUNT(id) AS orders_count, COALESCE(SUM(total), 0) AS revenue, COALESCE(AVG(total), 0) AS avg_check
+     FROM orders`,
+  ).first<{ orders_count: number; revenue: number; avg_check: number }>();
+
+  return c.json({
+    ordersCount: Number(stats?.orders_count ?? 0),
+    revenue: Number(stats?.revenue ?? 0),
+    averageCheck: Number(stats?.avg_check ?? 0),
+    message: "Finance v1 summary",
+  });
+});
+
+app.get("/admin/reviews", async (c) => {
+  await requireAuth(c, ["admin"]);
+  return c.json({
+    reviews: [],
+    message: "Coming soon",
+  });
 });
 
 app.onError((err, c) => {

@@ -3,6 +3,7 @@ import type { MenuItem, Restaurant } from "@nodex/domain";
 import { createOrder, listMenu, listMyOrders, listRestaurants, telegramAuth } from "./api";
 
 type Cart = Record<string, number>;
+type Tab = "catalog" | "cart" | "orders" | "profile";
 
 type TelegramWebApp = {
   initData?: string;
@@ -21,9 +22,18 @@ export function App() {
     import.meta.env.DEV ||
     import.meta.env.VITE_DEV_MODE === "1" ||
     import.meta.env.VITE_DEV_MODE === "true";
+  const DEBUG_AUTH = import.meta.env.VITE_DEBUG_AUTH === "1";
+
+  const [tab, setTab] = useState<Tab>("catalog");
   const [authState, setAuthState] = useState<"loading" | "ready" | "blocked">("loading");
   const [manualInitData, setManualInitData] = useState("");
   const [tgUserId, setTgUserId] = useState<string | null>(null);
+  const [debugInfo, setDebugInfo] = useState({
+    hasWebApp: false,
+    initDataLength: 0,
+    hasHashParam: false,
+  });
+
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [selectedRestaurant, setSelectedRestaurant] = useState<Restaurant | null>(null);
   const [menu, setMenu] = useState<MenuItem[]>([]);
@@ -38,6 +48,12 @@ export function App() {
   const loadRestaurants = async () => {
     const data = await listRestaurants();
     setRestaurants(data.restaurants);
+    if (!selectedRestaurant && data.restaurants.length > 0) {
+      const first = data.restaurants[0];
+      setSelectedRestaurant(first);
+      const menuData = await listMenu(first.id);
+      setMenu(menuData.items.filter((item) => item.isAvailable));
+    }
   };
 
   const loadMenu = async (restaurant: Restaurant) => {
@@ -59,9 +75,7 @@ export function App() {
   const total = subtotal + deliveryFee;
 
   const addToCart = (itemId: string) => {
-    if (!selectedRestaurant) {
-      return;
-    }
+    if (!selectedRestaurant) return;
 
     if (cartRestaurantId && cartRestaurantId !== selectedRestaurant.id) {
       setError("Cart can contain only one restaurant. Cart was reset.");
@@ -90,13 +104,20 @@ export function App() {
 
   useEffect(() => {
     const tg = readTelegramWebApp();
+    const initDataRaw = tg?.initData ?? "";
+    setDebugInfo({
+      hasWebApp: Boolean(tg),
+      initDataLength: initDataRaw.length,
+      hasHashParam: initDataRaw.includes("hash="),
+    });
+
     if (!tg) {
       setAuthState("blocked");
-      setError("Open this app via Telegram bot menu button.");
+      setError("Open via bot menu button (bottom). If you opened from a link, close and open from the menu.");
       return;
     }
 
-    const initData = tg.initData?.trim() ?? "";
+    const initData = initDataRaw.trim();
     const unsafeUserId = tg.initDataUnsafe?.user?.id;
     if (unsafeUserId !== undefined && unsafeUserId !== null) {
       setTgUserId(String(unsafeUserId));
@@ -104,7 +125,7 @@ export function App() {
 
     if (!initData) {
       setAuthState("blocked");
-      setError("Open this app via Telegram bot menu button.");
+      setError("Open via bot menu button (bottom). If you opened from a link, close and open from the menu.");
       return;
     }
 
@@ -114,15 +135,10 @@ export function App() {
   const submitOrder = async () => {
     setError(null);
     try {
-      if (!selectedRestaurant) {
-        throw new Error("Select restaurant");
-      }
-      if (!address.trim() || !phone.trim()) {
-        throw new Error("address and phone are required");
-      }
-      if (cartLines.length === 0) {
-        throw new Error("Cart is empty");
-      }
+      if (!selectedRestaurant) throw new Error("Select restaurant");
+      if (!address.trim() || !phone.trim()) throw new Error("address and phone are required");
+      if (cartLines.length === 0) throw new Error("Cart is empty");
+
       const created = await createOrder({
         restaurantId: selectedRestaurant.id,
         address,
@@ -133,6 +149,9 @@ export function App() {
       setError(`Order created: ${created.id}`);
       setCart({});
       setComment("");
+      setTab("orders");
+      const data = await listMyOrders();
+      setOrdersJson(JSON.stringify(data.orders, null, 2));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create order");
     }
@@ -164,14 +183,34 @@ export function App() {
       <main className="shell">
         <section className="panel">
           <h1>Nodex Client Mini App</h1>
-          <p>Open this app via Telegram bot menu button.</p>
+          <p>Open via bot menu button (bottom). If you opened from a link, close and open from the menu.</p>
           {tgUserId && <p>Detected Telegram user: {tgUserId}</p>}
           {error && <p className="error">{error}</p>}
         </section>
+        {DEBUG_AUTH && (
+          <section className="panel">
+            <h2>Auth debug</h2>
+            <p>Telegram.WebApp exists: {String(debugInfo.hasWebApp)}</p>
+            <p>initData length: {debugInfo.initDataLength}</p>
+            <p>contains hash=: {String(debugInfo.hasHashParam)}</p>
+            <button
+              onClick={() =>
+                void navigator.clipboard.writeText(
+                  [
+                    `Telegram.WebApp=${debugInfo.hasWebApp}`,
+                    `initData.length=${debugInfo.initDataLength}`,
+                    `initData.hasHash=${debugInfo.hasHashParam}`,
+                  ].join("\n"),
+                )
+              }
+            >
+              Copy debug
+            </button>
+          </section>
+        )}
         {DEV_MODE && (
           <section className="panel">
             <h2>DEV fallback</h2>
-            <p>Use manual initData only for local development.</p>
             <textarea
               value={manualInitData}
               onChange={(event) => setManualInitData(event.target.value)}
@@ -188,45 +227,69 @@ export function App() {
   return (
     <main className="shell">
       <h1>Nodex Client Mini App</h1>
-      <section className="panel">
-        <h2>Restaurants</h2>
-        <div className="list">
-          {restaurants.map((restaurant) => (
-            <button key={restaurant.id} onClick={() => void loadMenu(restaurant)}>
-              {restaurant.name} | fee: {restaurant.deliveryFee} | min: {restaurant.minOrder}
-            </button>
-          ))}
-        </div>
-      </section>
 
-      <section className="panel">
-        <h2>Menu {selectedRestaurant ? `(${selectedRestaurant.name})` : ""}</h2>
-        <div className="list">
-          {menu.map((item) => (
-            <button key={item.id} onClick={() => addToCart(item.id)}>
-              + {item.title} ({item.price})
-            </button>
-          ))}
-        </div>
-      </section>
+      <nav className="tabs">
+        <button className={tab === "catalog" ? "active" : ""} onClick={() => setTab("catalog")}>Catalog</button>
+        <button className={tab === "cart" ? "active" : ""} onClick={() => setTab("cart")}>Cart</button>
+        <button className={tab === "orders" ? "active" : ""} onClick={() => { setTab("orders"); void loadOrders(); }}>Orders</button>
+        <button className={tab === "profile" ? "active" : ""} onClick={() => setTab("profile")}>Profile</button>
+      </nav>
 
-      <section className="panel">
-        <h2>Cart (single restaurant rule)</h2>
-        <pre>{JSON.stringify(cartLines, null, 2)}</pre>
-        <p>Subtotal: {subtotal}</p>
-        <p>Delivery fee: {deliveryFee}</p>
-        <p>Total: {total}</p>
-        <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Address" />
-        <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone" />
-        <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Comment" />
-        <button onClick={() => void submitOrder()}>Create order</button>
-      </section>
+      {tab === "catalog" && (
+        <>
+          <section className="panel">
+            <h2>Restaurants</h2>
+            <div className="list">
+              {restaurants.map((restaurant) => (
+                <button key={restaurant.id} onClick={() => void loadMenu(restaurant)}>
+                  {restaurant.name} | fee: {restaurant.deliveryFee} | min: {restaurant.minOrder}
+                </button>
+              ))}
+            </div>
+          </section>
 
-      <section className="panel">
-        <h2>My orders</h2>
-        <button onClick={() => void loadOrders()}>Refresh</button>
-        <pre>{ordersJson}</pre>
-      </section>
+          <section className="panel">
+            <h2>Menu {selectedRestaurant ? `(${selectedRestaurant.name})` : ""}</h2>
+            <div className="list">
+              {menu.map((item) => (
+                <button key={item.id} onClick={() => addToCart(item.id)}>
+                  + {item.title} ({item.price})
+                </button>
+              ))}
+            </div>
+          </section>
+        </>
+      )}
+
+      {tab === "cart" && (
+        <section className="panel">
+          <h2>Cart (single restaurant rule)</h2>
+          <pre>{JSON.stringify(cartLines, null, 2)}</pre>
+          <p>Subtotal: {subtotal}</p>
+          <p>Delivery fee: {deliveryFee}</p>
+          <p>Total: {total}</p>
+          <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="Address" />
+          <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Phone" />
+          <input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Comment" />
+          <button onClick={() => void submitOrder()}>Create order</button>
+        </section>
+      )}
+
+      {tab === "orders" && (
+        <section className="panel">
+          <h2>My orders</h2>
+          <button onClick={() => void loadOrders()}>Refresh</button>
+          <pre>{ordersJson}</pre>
+        </section>
+      )}
+
+      {tab === "profile" && (
+        <section className="panel">
+          <h2>Profile</h2>
+          <p>Telegram user: {tgUserId ?? "unknown"}</p>
+          <p>Delivery is vendor-direct (no courier module).</p>
+        </section>
+      )}
 
       {error && <p className="error">{error}</p>}
     </main>
