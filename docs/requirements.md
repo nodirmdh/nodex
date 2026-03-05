@@ -16,6 +16,11 @@
 - Apply saved promo codes (optional) at order level.
 - Track active order status and courier location after courier acceptance.
 - View order history and ratings.
+- Provide an optional **vendor_comment** (special instructions) for the order:
+  - e.g., "no onions", "no spicy", "allergy notes", "sauce separately"
+  - Visible to the vendor (Vendorka) and admin.
+  - Separate from delivery_comment (landmark/instructions).
+
 
 ### Courier (Telegram Mini App)
 - Accept available orders.
@@ -88,7 +93,7 @@
 | Track | States | Notes |
 | --- | --- | --- |
 | Vendor | NEW → ACCEPTED → COOKING → READY | Vendor-driven preparation flow. |
-| Courier | COURIER_ACCEPTED → PICKED_UP → DELIVERED | Courier-driven delivery flow. |
-| Pickup | READY_FOR_PICKUP → PICKED_UP_BY_CUSTOMER | Applies only to pickup orders. |
+| Delivery | READY → HANDOFF_CONFIRMED → PICKED_UP → DELIVERED → COMPLETED | Courier confirms handoff, then delivery code completes delivery. |
+| Pickup | READY → HANDOFF_CONFIRMED → COMPLETED | Vendor confirms pickup code; no courier assigned. |
 | Cancel | CANCELLED | Admin can cancel anytime. Vendor can cancel only **before acceptance** (ASSUMPTION). |
 

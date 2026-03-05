@@ -2,7 +2,7 @@
 
 ## Glossary
 - **Vendorka**: Vendor cabinet (Telegram Mini App) for a single physical vendor point.
-- **Vendor**: Single physical point (no outlets) with one `address_text` and geo (lat/lng).
+- **Vendor**: Single physical point (no outlets) with `name`, `address_text`, geo (lat/lng), optional `phone`, `inn`, `opening_hours`, `payout_details`, and `is_active`.
 - **Promotion**: Discount rule (item-level or order-level) that does not stack on the same item units.
 - **Promo code**: Admin-managed discount code saved by client in profile.
 
@@ -35,15 +35,16 @@
 ### Courier track
 | State | Owner | Notes |
 | --- | --- | --- |
-| COURIER_ACCEPTED | Courier | Courier accepts delivery. |
-| PICKED_UP | Courier | Requires vendor pickup code. |
-| DELIVERED | Courier | Requires client delivery code. |
+| HANDOFF_CONFIRMED | Courier | Courier confirms vendor handoff code. |
+| PICKED_UP | Courier | Courier has picked up the order. |
+| DELIVERED | Courier | Courier enters client delivery code. |
+| COMPLETED | System | Finalized (optional). |
 
 ### Pickup orders
 | State | Owner | Notes |
 | --- | --- | --- |
-| READY_FOR_PICKUP | Vendor | Only for RESTAURANTS with supports_pickup. |
-| PICKED_UP_BY_CUSTOMER | Client | Customer confirms pickup. |
+| HANDOFF_CONFIRMED | Vendor | Vendor confirms pickup code. |
+| COMPLETED | System | Finalized (pickup). |
 
 ### Cancellation
 | State | Owner | Notes |

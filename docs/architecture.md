@@ -18,6 +18,29 @@
                       (Optional Cache/Queue)
 ```
 
+## Technology stack (LOCKED)
+
+Backend:
+- Language: TypeScript (Node.js)
+- Framework: NestJS (or Fastify/Express — choose one and keep consistent)
+- DB: PostgreSQL
+- ORM: Prisma (or TypeORM — choose one and keep consistent)
+- Migrations: ORM migrations (no raw SQL-only migrations unless necessary)
+
+Frontend:
+- Admin Web: React + TypeScript (Vite)
+- Telegram Mini Apps (Client/Courier/Vendorka): React + TypeScript (Vite)
+- Telegram `initData` is read by the mini app and sent to backend for verification on every request
+
+Testing:
+- Unit tests: Vitest (or Jest — choose one)
+- API tests (optional): supertest
+
+Style:
+- Lint: ESLint
+- Format: Prettier
+
+
 ## Modules / services (logical)
 - **Auth & Session**: Telegram `initData` verification and session handling.
 - **Catalog**: Vendors, menus, items, categories.

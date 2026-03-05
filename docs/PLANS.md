@@ -4,6 +4,10 @@
 **Deliverables**
 - Complete core documentation set.
 - Establish repo structure and initial conventions.
+- Initialize Node.js/TypeScript backend scaffold.
+- Configure testing (Vitest/Jest) and CI test command.
+- Configure DB migrations (Prisma/TypeORM).
+
 
 **Tests**
 - Doc linting / markdown checks (if configured).
@@ -22,9 +26,21 @@
 
 ## Phase 2: Full promotions + order create + codes
 **Deliverables**
-- Full promotions engine (COMBO, BUY_X_GET_Y, GIFT).
-- Order creation flow with pickup/delivery codes (hashed at rest).
-- Promo codes (order-level) integration.
+- Order creation endpoint
+- Order persistence with snapshot pricing
+- Pickup and delivery code generation (hashed)
+- Full promotions engine:
+  - COMBO
+  - BUY_X_GET_Y
+  - GIFT
+- Order state transitions (basic)
+- Unit tests for promotions ordering
+- Unit tests for code verification
+
+Out of scope:
+- Payments
+- Payouts
+- Refund automation
 
 **Tests**
 - End-to-end quote tests verifying non-stacking and ordering rules.

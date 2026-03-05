@@ -1,0 +1,12 @@
+name = "nodex-worker"
+main = "src/index.ts"
+compatibility_date = "2026-03-01"
+
+[vars]
+JWT_TTL_SECONDS = "604800"
+TELEGRAM_MAX_AUTH_AGE_SECONDS = "86400"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "nodex-db"
+database_id = "599af7d3-587f-4381-9ad4-0efd52d2daa3"
